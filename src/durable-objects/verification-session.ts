@@ -66,6 +66,7 @@ export interface SessionData {
 	idType?: string;
 	errorCode?: number;
 	linkBack?: string;
+	callbackStatus?: 'pending' | 'sent' | 'failed';
 }
 
 export interface StartResult {
@@ -128,7 +129,8 @@ export class VerificationSession extends DurableObject<Env> {
 				payloadHash TEXT,
 				stateInt INTEGER DEFAULT 1,
 				data TEXT NOT NULL,
-				createdAt INTEGER NOT NULL
+				createdAt INTEGER NOT NULL,
+				callbackStatus TEXT DEFAULT 'pending'
 			);
 			CREATE TABLE IF NOT EXISTS payloads (
 				payloadHash TEXT PRIMARY KEY,
@@ -153,6 +155,20 @@ export class VerificationSession extends DurableObject<Env> {
 				CREATE INDEX IF NOT EXISTS idx_request_sessions_createdAt
 					ON request_sessions (createdAt);
 			`);
+			// Migration: add callbackStatus column for pre-existing DO instances
+			// whose sessions table predates this field. Wrapped in try/catch
+			// because the column already exists on a fresh DO (created above).
+			try {
+				this.ctx.storage.sql.exec(`ALTER TABLE sessions ADD COLUMN callbackStatus TEXT DEFAULT 'pending'`);
+			} catch {
+				// Column already exists — nothing to do.
+			}
+			// Index callbackStatus so the alarm scan is cheap.
+			try {
+				this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_sessions_callbackStatus ON sessions (callbackStatus)`);
+			} catch {
+				// Index may already exist.
+			}
 			this.initialized = true;
 		}
 
@@ -305,29 +321,52 @@ export class VerificationSession extends DurableObject<Env> {
 		const sessionData = this.getById(sessionId);
 		if (!sessionData) return null;
 
-		sessionData.stateInt  = sessionStateInt;
-		sessionData.state     = STATE_MAP[sessionStateInt];
-		sessionData.stepIp    = stepIp;
-		sessionData.idCountry = idCountry;
-		sessionData.idState   = idState;
-		sessionData.idType    = idType;
-		sessionData.errorCode = errorCode;
+		// Terminal-state guard: an already-success or already-fail session must
+		// not be re-ended. Re-ending would dispatch a duplicate partner callback
+		// and mint a second isAgeVerified cookie from the same verification.
+		// Return the existing result payload (re-encrypted) instead.
+		if (sessionData.stateInt === SESSION_STATE_SUCCESS || sessionData.stateInt === SESSION_STATE_FAILED) {
+			const decryptedPayload = await AvsEncryption.decryptString(sessionData.payload, aesKey);
+			decryptedPayload.verificationResult = {
+				state:     STATE_MAP[sessionData.stateInt],
+				stateInt:  sessionData.stateInt,
+				sessionId,
+				errorCode: sessionData.errorCode || 0,
+			};
+			return { payload: await AvsEncryption.encryptObject(decryptedPayload, aesKey) };
+		}
+
+		sessionData.stateInt        = sessionStateInt;
+		sessionData.state           = STATE_MAP[sessionStateInt];
+		sessionData.stepIp          = stepIp;
+		sessionData.idCountry       = idCountry;
+		sessionData.idState         = idState;
+		sessionData.idType          = idType;
+		sessionData.errorCode       = errorCode;
+		sessionData.callbackStatus  = 'pending';
 
 		// Dispatch callback in background so user-facing completion is not blocked.
 		if (sessionData.callbackUrl) {
 			this.ctx.waitUntil(
 				this.dispatchCallback(sessionData, sessionStateInt, sessionId, errorCode, stepIp, idCountry, idState, idType)
 			);
+			// Schedule a retry alarm in 60s as a fallback for failed/pending callbacks.
+			try {
+				this.ctx.storage.setAlarm(Date.now() + 60_000);
+			} catch (err) {
+				console.error('Failed to schedule callback retry alarm', err);
+			}
 		}
 
 		// Update session in SQLite
 		this.ctx.storage.sql.exec(
-			`INSERT OR REPLACE INTO sessions (sessionId, payloadHash, stateInt, data, createdAt) VALUES (?, ?, ?, ?, ?)`,
+			`INSERT OR REPLACE INTO sessions (sessionId, payloadHash, stateInt, data, createdAt, callbackStatus) VALUES (?, ?, ?, ?, ?, ?)`,
 			sessionId,
 			sessionData.payload ? await AvsEncryption.computePayloadHash(sessionData.payload) : null,
 			sessionStateInt,
 			JSON.stringify(sessionData),
-			Date.now()
+			Date.now(),
+			'pending'
 		);
 
 		// Audit log
@@ -514,12 +553,64 @@ export class VerificationSession extends DurableObject<Env> {
 					throw new Error(`Callback returned HTTP ${response.status}`);
 				}
 
+				this.updateCallbackStatus(sessionId, 'sent');
 				console.log('Callback data success!');
 			} finally {
 				clearTimeout(timeoutId);
 			}
 		} catch (err) {
+			this.updateCallbackStatus(sessionId, 'failed');
 			console.log('Callback dispatch error', { sessionId });
+		}
+	}
+
+	/**
+	 * Update the callbackStatus on a session row — both in the indexed
+	 * `callbackStatus` column (for the alarm scan) and inside the `data`
+	 * JSON blob (so getById round-trips it). No-op if the session is gone.
+	 */
+	private updateCallbackStatus(sessionId: string, status: 'pending' | 'sent' | 'failed'): void {
+		this.ensureInitialized();
+		const sessionData = this.getById(sessionId);
+		if (!sessionData) return;
+		sessionData.callbackStatus = status;
+		this.ctx.storage.sql.exec(
+			`UPDATE sessions SET data = ?, callbackStatus = ? WHERE sessionId = ?`,
+			JSON.stringify(sessionData),
+			status,
+			sessionId
+		);
+	}
+
+	/**
+	 * Alarm handler — used as a fallback to retry callbacks that never
+	 * reached 'sent' (e.g. the waitUntil task was evicted, or the partner
+	 * endpoint was temporarily unavailable). Scheduled 60s after endSession.
+	 * Idempotent: dispatchCallback re-marks the status on each attempt.
+	 */
+	async alarm(): Promise<void> {
+		this.ensureInitialized();
+		const cursor = this.ctx.storage.sql.exec(
+			`SELECT sessionId, data FROM sessions WHERE callbackStatus IN ('failed', 'pending')`
+		);
+		for (const row of cursor) {
+			const sessionData = JSON.parse(row.data as string) as SessionData;
+			// Only retry terminal sessions (success/fail) that have a callback URL.
+			if (
+				sessionData.callbackUrl &&
+				(sessionData.stateInt === SESSION_STATE_SUCCESS || sessionData.stateInt === SESSION_STATE_FAILED)
+			) {
+				await this.dispatchCallback(
+					sessionData,
+					sessionData.stateInt,
+					sessionData.sessionId,
+					sessionData.errorCode || 0,
+					sessionData.stepIp || 0,
+					sessionData.idCountry || '',
+					sessionData.idState || '',
+					sessionData.idType || ''
+				);
+			}
 		}
 	}
 }
