@@ -1,0 +1,36 @@
+/**
+ * Token error page — replaces token/error.twig
+ */
+import { renderBase } from './base';
+
+export function renderTokenError(code: number, msg: string): string {
+	const content = `
+	<div id="avsMainContainer">
+
+		<div id="errorMessageArea" class="page layoutError">
+			<div class="headerLogo">
+				<img src="/static/img/logo.svg"/>
+			</div>
+			<h1 class="introHeading">
+				<i class="fa fa-exclamation-triangle" aria-hidden="true"></i>
+				Error
+			</h1>
+			<h2 class="introText" id="errorMessageTextArea"></h2>
+			<h2 class="introText" id="errorMessageAdditionalTextArea">
+				${code} : ${escapeHtml(msg)}
+			</h2>
+		</div>
+
+	</div>`;
+
+	return renderBase({ content });
+}
+
+function escapeHtml(str: string): string {
+	return str
+		.replace(/&/g, '&amp;')
+		.replace(/</g, '&lt;')
+		.replace(/>/g, '&gt;')
+		.replace(/"/g, '&quot;')
+		.replace(/'/g, '&#39;');
+}
