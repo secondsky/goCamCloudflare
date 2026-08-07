@@ -341,8 +341,6 @@ export class VerificationSession extends DurableObject<Env> {
 
 		// Build result payload (same format as original)
 		const decryptedPayload = await AvsEncryption.decryptString(sessionData.payload, aesKey);
-		decryptedPayload.userIpStr          = '127.0.0.1';
-		decryptedPayload.userIpCountry      = 'A1';
 		decryptedPayload.userData           = sessionData.userData;
 		decryptedPayload.callbackUrl        = '';
 		decryptedPayload.verificationResult = {
