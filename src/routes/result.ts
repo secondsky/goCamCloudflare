@@ -4,7 +4,6 @@
  */
 import type { Env } from '../index';
 import { getConfig } from '../config';
-import { AvsEncryption } from '../lib/encryption';
 import { AvsResponse } from '../lib/response';
 import { constantTimeEqual } from '../lib/crypto-utils';
 import { callDoJson } from '../lib/do';
@@ -269,22 +268,22 @@ export async function handleResultRoutes(request: Request, env: Env, url: URL): 
 
 	// POST /result/isSuccess
 	if (pathname === '/result/isSuccess') {
-		const payload = body.d;
-
-		// Fix #3: Use the stable payloadHash (SHA-256 of the ORIGINAL payload)
-		// which is stored in the cookie session. The payload here may be re-encrypted,
-		// so deriving from the body would yield a different hash. Prefer the cookie,
-		// fall back to computing the hash from the body payload.
-		let payloadHash: string;
-		if (sessionContext) {
-			payloadHash = sessionContext.payloadHash;
-		} else {
-			payloadHash = payload ? await AvsEncryption.computePayloadHash(payload) : '';
+		// Require the signed avs-session cookie. Previously this endpoint was
+		// pollable without a cookie and used an attacker-supplied payload prefix.
+		if (!sessionContext) {
+			return Response.json(AvsResponse.errorResponse(30010, 'Session not found'));
 		}
 
-		const doName = payloadHash || 'default';
-		const stub = getDoStub(env, doName);
-		const checkResult: any = await callDoJson<any>(stub, 'isPayloadValidated', { payloadHash });
+		const stub = getDoStub(env, sessionContext.payloadHash);
+		let checkResult: any;
+		try {
+			checkResult = await callDoJson<{ isValidated: boolean }>(stub, 'isPayloadValidated', {
+				payloadHash: sessionContext.payloadHash,
+			});
+		} catch (err) {
+			console.error('DO isPayloadValidated error:', err);
+			return Response.json(AvsResponse.errorResponse(30010, 'Session lookup failed'));
+		}
 
 		return Response.json(AvsResponse.successResponse({
 			isValidated: checkResult?.isValidated || false,
