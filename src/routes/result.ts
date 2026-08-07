@@ -6,6 +6,7 @@ import type { Env } from '../index';
 import { getConfig } from '../config';
 import { AvsEncryption } from '../lib/encryption';
 import { AvsResponse } from '../lib/response';
+import { constantTimeEqual } from '../lib/crypto-utils';
 import { getDoStub, getSessionContextFromRequest } from '../middleware/session';
 import {
 	isValidStep,
@@ -17,10 +18,12 @@ const MAX_TEST_DURATION = 20 * 60 * 1000; // 20 minutes
 
 /**
  * Check that a client-supplied token matches the server-stored key.
- * Exported for unit testing. (Constant-time comparison is added in Task 14.)
+ * Exported for unit testing. Uses constant-time comparison to avoid
+ * timing side-channels on the successKey/failKey check.
  */
 export function tokenIsValid(token: unknown, storedKey: string | undefined): boolean {
-	return typeof storedKey === 'string' && typeof token === 'string' && token === storedKey;
+	if (typeof storedKey !== 'string' || typeof token !== 'string') return false;
+	return constantTimeEqual(token, storedKey);
 }
 
 interface RequestSessionData {
