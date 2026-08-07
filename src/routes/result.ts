@@ -1,0 +1,288 @@
+/**
+ * Result routes — replaces source/backend/app/route/result.ts
+ * Handles: POST /result/success, POST /result/fail, POST /result/isSuccess
+ */
+import type { Env } from '../index';
+import { getConfig } from '../config';
+import { AvsResponse } from '../lib/response';
+import { getDoStub, getSessionContextFromRequest } from '../middleware/session';
+import {
+	isValidStep,
+	SESSION_STATE_SUCCESS,
+	SESSION_STATE_FAILED,
+} from '../durable-objects/verification-session';
+
+const MAX_TEST_DURATION = 20 * 60 * 1000; // 20 minutes
+
+/**
+ * Check that a client-supplied token matches the server-stored key.
+ * Exported for unit testing. (Constant-time comparison is added in Task 14.)
+ */
+export function tokenIsValid(token: unknown, storedKey: string | undefined): boolean {
+	return typeof storedKey === 'string' && typeof token === 'string' && token === storedKey;
+}
+
+interface RequestSessionData {
+	successKey?: string;
+	failKey?: string;
+	accessTime?: number;
+	sessionStartId: string;
+	payloadHash?: string;
+	payload?: string;
+}
+
+async function callDoJson<T>(
+	stub: ReturnType<typeof getDoStub>,
+	action: string,
+	body: Record<string, unknown>
+): Promise<T> {
+	const response = await stub.fetch(
+		new Request(`http://do/${action}`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(body),
+		})
+	);
+
+	let json: any = null;
+	try {
+		json = await response.json();
+	} catch {
+		throw new Error(`Invalid JSON response from DO action "${action}"`);
+	}
+
+	if (!response.ok || (json && typeof json === 'object' && typeof json.error !== 'undefined')) {
+		throw new Error(`DO action "${action}" failed`);
+	}
+
+	return json as T;
+}
+
+export async function handleResultRoutes(request: Request, env: Env, url: URL): Promise<Response | null> {
+	const { pathname } = url;
+	const method = request.method;
+	const config = getConfig(env);
+
+	if (method !== 'POST') return null;
+
+	// Parse body
+	let body: any;
+	try {
+		const contentType = request.headers.get('Content-Type') || '';
+		if (contentType.includes('application/json')) {
+			body = await request.json();
+		} else {
+			const formData = await request.formData();
+			body = Object.fromEntries(formData);
+		}
+	} catch {
+		body = {};
+	}
+
+	// Get payloadHash + request session id from signed cookie.
+	const sessionContext = await getSessionContextFromRequest(request, config.encryption.key);
+
+	// POST /result/success
+	if (pathname === '/result/success') {
+		const token                      = body.token;
+		const stepId                     = parseInt(body.stepId || '0');
+		const idCountry                  = body.idCountry || '';
+		const idState                    = body.idState || '';
+		const idType                     = body.idType || '';
+
+		const sessionResult = {
+			stepId,
+			idCountry,
+			idState,
+			idType,
+			errorCode: 0,
+		};
+
+		if (!isValidStep(stepId)) {
+			sessionResult.stepId    = 0;
+			sessionResult.errorCode = 30007;
+			return Response.json(AvsResponse.errorResponse(30007, 'Invalid step id'));
+		}
+
+		if (!sessionContext) {
+			return Response.json(AvsResponse.errorResponse(30010, 'Session not found'));
+		}
+
+		const stub = getDoStub(env, sessionContext.payloadHash);
+
+		// Get request session data from DO
+		let reqSession: RequestSessionData | null = null;
+		try {
+			reqSession = await callDoJson<RequestSessionData | null>(stub, 'getRequestSession', {
+				sessionId: sessionContext.requestSessionId,
+			});
+		} catch (err) {
+			console.error('DO getRequestSession error:', err);
+			reqSession = null;
+		}
+
+		if (!reqSession) {
+			return Response.json(AvsResponse.errorResponse(30010, 'Session not found'));
+		}
+
+		// Check max test duration
+		if (reqSession.accessTime && (Date.now() - reqSession.accessTime) >= MAX_TEST_DURATION) {
+			sessionResult.errorCode = 30008;
+			await callDoJson<{ success: boolean }>(stub, 'updateState', {
+				sessionId: reqSession.sessionStartId,
+				stateData: sessionResult,
+			});
+			return Response.json(AvsResponse.errorResponse(30008, 'Test max allowed time expired'));
+		}
+
+		// Verify token (always required — no bypass via deviceLocationVerification)
+		if (!tokenIsValid(token, reqSession.successKey)) {
+			sessionResult.errorCode = 30009;
+			await callDoJson<{ success: boolean }>(stub, 'updateState', {
+				sessionId: reqSession.sessionStartId,
+				stateData: sessionResult,
+			});
+			return Response.json(AvsResponse.errorResponse(30009, 'Invalid token'));
+		}
+
+		// End session as success
+		const endResult: any = await callDoJson<any>(stub, 'end', {
+			sessionId:       reqSession.sessionStartId,
+			sessionStateInt: SESSION_STATE_SUCCESS,
+			stepIp:          stepId,
+			errorCode:       0,
+			idCountry,
+			idState,
+			idType,
+		});
+
+		if (!endResult || !endResult.payload) {
+			sessionResult.errorCode = 30010;
+			return Response.json(AvsResponse.errorResponse(30010, 'Failed to save session data'));
+		}
+
+		const successPayload = endResult.payload;
+
+		// Set the isAgeVerified cookie
+		const cookieValue = `isAgeVerified=${successPayload}; Path=/; Max-Age=${config.cookie.maxAge / 1000}${config.cookie.secure ? '; Secure' : ''}${config.cookie.httpOnly ? '; HttpOnly' : ''}`;
+
+		const response = Response.json(AvsResponse.successResponse({
+			successPayload,
+		}));
+
+		const newHeaders = new Headers(response.headers);
+		newHeaders.append('Set-Cookie', cookieValue);
+		return new Response(response.body, {
+			status: response.status,
+			headers: newHeaders,
+		});
+	}
+
+	// POST /result/fail
+	if (pathname === '/result/fail') {
+		const token                      = body.token;
+		const stepId                     = parseInt(body.stepId || '0');
+		const errorCode                  = parseInt(body.errorCode || '0');
+		const idCountry                  = body.idCountry || '';
+		const idState                    = body.idState || '';
+		const idType                     = body.idType || '';
+
+		const sessionResult = {
+			stepId,
+			idCountry,
+			idState,
+			idType,
+			errorCode,
+		};
+
+		if (!isValidStep(stepId)) {
+			sessionResult.stepId    = 0;
+			sessionResult.errorCode = 30011;
+			return Response.json(AvsResponse.errorResponse(30011, 'Invalid step id'));
+		}
+
+		if (!sessionContext) {
+			return Response.json(AvsResponse.errorResponse(30014, 'Session not found'));
+		}
+
+		const stub = getDoStub(env, sessionContext.payloadHash);
+
+		// Get request session data from DO
+		let reqSession: RequestSessionData | null = null;
+		try {
+			reqSession = await callDoJson<RequestSessionData | null>(stub, 'getRequestSession', {
+				sessionId: sessionContext.requestSessionId,
+			});
+		} catch (err) {
+			console.error('DO getRequestSession error:', err);
+			reqSession = null;
+		}
+
+		if (!reqSession) {
+			return Response.json(AvsResponse.errorResponse(30014, 'Session not found'));
+		}
+
+		// Check max test duration
+		if (reqSession.accessTime && (Date.now() - reqSession.accessTime) >= MAX_TEST_DURATION) {
+			sessionResult.errorCode = 30012;
+			await callDoJson<{ success: boolean }>(stub, 'updateState', {
+				sessionId: reqSession.sessionStartId,
+				stateData: sessionResult,
+			});
+			return Response.json(AvsResponse.errorResponse(30012, 'Test max allowed time expired'));
+		}
+
+		// Verify token (always required — no bypass via deviceLocationVerification)
+		if (!tokenIsValid(token, reqSession.failKey)) {
+			sessionResult.errorCode = 30013;
+			await callDoJson<{ success: boolean }>(stub, 'updateState', {
+				sessionId: reqSession.sessionStartId,
+				stateData: sessionResult,
+			});
+			return Response.json(AvsResponse.errorResponse(30013, 'Invalid token'));
+		}
+
+		// End session as fail
+		const endResult: any = await callDoJson<any>(stub, 'end', {
+			sessionId:       reqSession.sessionStartId,
+			sessionStateInt: SESSION_STATE_FAILED,
+			stepIp:          stepId,
+			errorCode,
+			idCountry,
+			idState,
+			idType,
+		});
+
+		if (!endResult || typeof endResult.payload !== 'string') {
+			sessionResult.errorCode = 30014;
+			return Response.json(AvsResponse.errorResponse(30014, 'Failed to save session data'));
+		}
+
+		return Response.json(AvsResponse.successResponse());
+	}
+
+	// POST /result/isSuccess
+	if (pathname === '/result/isSuccess') {
+		const payload = body.d;
+
+		// Fix #3: Use the stable payloadHash (first 64 chars of the ORIGINAL payload)
+		// which is stored in the cookie session. The payload here may be re-encrypted.
+		// We need to get the payloadHash from the request session if available.
+		let payloadHash: string;
+		if (sessionContext) {
+			payloadHash = sessionContext.payloadHash || (payload || '').substring(0, 64);
+		} else {
+			payloadHash = (payload || '').substring(0, 64);
+		}
+
+		const doName = payloadHash || 'default';
+		const stub = getDoStub(env, doName);
+		const checkResult: any = await callDoJson<any>(stub, 'isPayloadValidated', { payloadHash });
+
+		return Response.json(AvsResponse.successResponse({
+			isValidated: checkResult?.isValidated || false,
+		}));
+	}
+
+	return null;
+}
