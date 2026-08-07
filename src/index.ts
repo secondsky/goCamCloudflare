@@ -85,6 +85,13 @@ export default {
 			);
 			newHeaders.set('Access-Control-Allow-Origin', '*');
 			newHeaders.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+			newHeaders.set('X-Content-Type-Options', 'nosniff');
+			newHeaders.set('Referrer-Policy', 'no-referrer');
+			newHeaders.set('Strict-Transport-Security', 'max-age=63072000; includeSubDomains');
+			newHeaders.set(
+				'Content-Security-Policy',
+				"default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; script-src 'self'; connect-src 'self'; frame-ancestors *;"
+			);
 			return new Response(response.body, {
 				status: response.status,
 				statusText: response.statusText,
