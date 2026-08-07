@@ -7,6 +7,8 @@
  * previous AES-CBC implementation had no MAC, leaving ciphertexts malleable.)
  */
 
+import type { DecryptedPayload } from './types';
+
 export class AvsEncryption {
 
 	private static encoder = new TextEncoder();
@@ -82,7 +84,7 @@ export class AvsEncryption {
 	 * So split(':') gives [ivHex + '|', encryptedHex]
 	 * We trim the trailing '|' from the iv part.
 	 */
-	static async decryptString(encryptedString: string, keyBytes: Uint8Array): Promise<any> {
+	static async decryptString(encryptedString: string, keyBytes: Uint8Array): Promise<DecryptedPayload> {
 		const key = await AvsEncryption.importKey(keyBytes);
 
 		const separatorIndex = encryptedString.indexOf(':');
