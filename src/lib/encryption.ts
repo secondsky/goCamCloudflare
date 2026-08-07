@@ -103,6 +103,21 @@ export class AvsEncryption {
 	}
 
 	/**
+	 * Compute a SHA-256 hash of the payload ciphertext.
+	 *
+	 * This is a content-addressable identifier — the same ciphertext always
+	 * produces the same hash, regardless of the random IV embedded in it.
+	 * Used for DO routing, dedup, and session identity. (Previously this was
+	 * computed as `payload.substring(0, 64)`, which is the IV prefix and
+	 * therefore changed every time the same payload was re-encrypted.)
+	 */
+	static async computePayloadHash(ciphertext: string): Promise<string> {
+		const data = AvsEncryption.encoder.encode(ciphertext);
+		const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+		return AvsEncryption.bytesToHex(new Uint8Array(hashBuffer));
+	}
+
+	/**
 	 * Base64 encode an object to a string.
 	 */
 	static base64EncodeObject(object: object): string {

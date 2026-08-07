@@ -101,7 +101,7 @@ async function renderTokenPage(
 	}
 
 	// Use a DO instance keyed by the payload hash
-	const payloadHash = payload.substring(0, 64);
+	const payloadHash = await AvsEncryption.computePayloadHash(payload);
 	const stub = getDoStub(env, payloadHash);
 
 	let avsSession: DoStartResponse | null = null;

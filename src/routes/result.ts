@@ -4,6 +4,7 @@
  */
 import type { Env } from '../index';
 import { getConfig } from '../config';
+import { AvsEncryption } from '../lib/encryption';
 import { AvsResponse } from '../lib/response';
 import { getDoStub, getSessionContextFromRequest } from '../middleware/session';
 import {
@@ -265,14 +266,15 @@ export async function handleResultRoutes(request: Request, env: Env, url: URL): 
 	if (pathname === '/result/isSuccess') {
 		const payload = body.d;
 
-		// Fix #3: Use the stable payloadHash (first 64 chars of the ORIGINAL payload)
-		// which is stored in the cookie session. The payload here may be re-encrypted.
-		// We need to get the payloadHash from the request session if available.
+		// Fix #3: Use the stable payloadHash (SHA-256 of the ORIGINAL payload)
+		// which is stored in the cookie session. The payload here may be re-encrypted,
+		// so deriving from the body would yield a different hash. Prefer the cookie,
+		// fall back to computing the hash from the body payload.
 		let payloadHash: string;
 		if (sessionContext) {
-			payloadHash = sessionContext.payloadHash || (payload || '').substring(0, 64);
+			payloadHash = sessionContext.payloadHash;
 		} else {
-			payloadHash = (payload || '').substring(0, 64);
+			payloadHash = payload ? await AvsEncryption.computePayloadHash(payload) : '';
 		}
 
 		const doName = payloadHash || 'default';

@@ -44,3 +44,20 @@ describe('AvsEncryption AES-GCM', () => {
 		await expect(AvsEncryption.decryptString(encrypted, WRONG_KEY)).rejects.toThrow();
 	});
 });
+
+describe('computePayloadHash', () => {
+	it('returns a 64-char hex string', async () => {
+		const hash = await AvsEncryption.computePayloadHash('abc123|:deadbeef');
+		expect(hash).toMatch(/^[0-9a-f]{64}$/);
+	});
+
+	it('is deterministic for the same ciphertext', async () => {
+		expect(await AvsEncryption.computePayloadHash('abc123|:deadbeef'))
+			.toBe(await AvsEncryption.computePayloadHash('abc123|:deadbeef'));
+	});
+
+	it('differs for different ciphertexts', async () => {
+		expect(await AvsEncryption.computePayloadHash('abc123|:deadbeef'))
+			.not.toBe(await AvsEncryption.computePayloadHash('abc123|:cafebabe'));
+	});
+});

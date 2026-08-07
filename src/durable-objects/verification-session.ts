@@ -189,7 +189,7 @@ export class VerificationSession extends DurableObject<Env> {
 				}
 				case 'updateState': {
 					const body = await request.json() as { sessionId: string; stateData: StateData };
-					const result = this.updateState(body.sessionId, body.stateData);
+					const result = await this.updateState(body.sessionId, body.stateData);
 					return Response.json({ success: result });
 				}
 				case 'isPayloadValidated': {
@@ -229,7 +229,7 @@ export class VerificationSession extends DurableObject<Env> {
 		const aesKey = await this.getAesKey();
 		const payloadParsed = await AvsEncryption.decryptString(payload, aesKey);
 		const sessionId = crypto.randomUUID();
-		const payloadHash = payload.substring(0, 64);
+		const payloadHash = await AvsEncryption.computePayloadHash(payload);
 
 		// Check payload state
 		let sessionState = SESSION_STATE_IN_PROGRESS;
@@ -324,7 +324,7 @@ export class VerificationSession extends DurableObject<Env> {
 		this.ctx.storage.sql.exec(
 			`INSERT OR REPLACE INTO sessions (sessionId, payloadHash, stateInt, data, createdAt) VALUES (?, ?, ?, ?, ?)`,
 			sessionId,
-			sessionData.payload ? sessionData.payload.substring(0, 64) : null,
+			sessionData.payload ? await AvsEncryption.computePayloadHash(sessionData.payload) : null,
 			sessionStateInt,
 			JSON.stringify(sessionData),
 			Date.now()
@@ -357,7 +357,7 @@ export class VerificationSession extends DurableObject<Env> {
 		};
 	}
 
-	private updateState(sessionId: string, stateData: StateData): boolean {
+	private async updateState(sessionId: string, stateData: StateData): Promise<boolean> {
 		this.ensureInitialized();
 
 		const sessionData = this.getById(sessionId);
@@ -372,7 +372,7 @@ export class VerificationSession extends DurableObject<Env> {
 		this.ctx.storage.sql.exec(
 			`INSERT OR REPLACE INTO sessions (sessionId, payloadHash, stateInt, data, createdAt) VALUES (?, ?, ?, ?, ?)`,
 			sessionId,
-			sessionData.payload ? sessionData.payload.substring(0, 64) : null,
+			sessionData.payload ? await AvsEncryption.computePayloadHash(sessionData.payload) : null,
 			sessionData.stateInt || SESSION_STATE_IN_PROGRESS,
 			JSON.stringify(sessionData),
 			Date.now()
