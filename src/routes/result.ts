@@ -7,6 +7,7 @@ import { getConfig } from '../config';
 import { AvsResponse } from '../lib/response';
 import { constantTimeEqual } from '../lib/crypto-utils';
 import { callDoJson } from '../lib/do';
+import { safeParseInt } from '../lib/parse';
 import { getDoStub, getSessionContextFromRequest } from '../middleware/session';
 import {
 	isValidStep,
@@ -62,7 +63,7 @@ export async function handleResultRoutes(request: Request, env: Env, url: URL): 
 	// POST /result/success
 	if (pathname === '/result/success') {
 		const token                      = body.token;
-		const stepId                     = parseInt(body.stepId || '0');
+		const stepId                     = safeParseInt(body.stepId, 0);
 		const idCountry                  = body.idCountry || '';
 		const idState                    = body.idState || '';
 		const idType                     = body.idType || '';
@@ -172,8 +173,8 @@ export async function handleResultRoutes(request: Request, env: Env, url: URL): 
 	// POST /result/fail
 	if (pathname === '/result/fail') {
 		const token                      = body.token;
-		const stepId                     = parseInt(body.stepId || '0');
-		const errorCode                  = parseInt(body.errorCode || '0');
+		const stepId                     = safeParseInt(body.stepId, 0);
+		const errorCode                  = safeParseInt(body.errorCode, 0);
 		const idCountry                  = body.idCountry || '';
 		const idState                    = body.idState || '';
 		const idType                     = body.idType || '';
