@@ -43,7 +43,7 @@ export async function handleResultRoutes(request: Request, env: Env, url: URL): 
 
 	if (method !== 'POST') return null;
 
-	// Parse body
+	// Parse body — reject malformed requests with 400
 	let body: any;
 	try {
 		const contentType = request.headers.get('Content-Type') || '';
@@ -53,8 +53,11 @@ export async function handleResultRoutes(request: Request, env: Env, url: URL): 
 			const formData = await request.formData();
 			body = Object.fromEntries(formData);
 		}
+		if (!body || typeof body !== 'object') {
+			return Response.json(AvsResponse.errorResponse(30000, 'Invalid request body'), { status: 400 });
+		}
 	} catch {
-		body = {};
+		return Response.json(AvsResponse.errorResponse(30000, 'Malformed request body'), { status: 400 });
 	}
 
 	// Get payloadHash + request session id from signed cookie.

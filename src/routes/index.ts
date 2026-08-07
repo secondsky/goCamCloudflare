@@ -149,12 +149,19 @@ export async function handleIndexRoutes(request: Request, env: Env, url: URL): P
 	// POST /validateVerificationPayload
 	if (pathname === '/validateVerificationPayload' && method === 'POST') {
 		let body: any;
-		const ct = request.headers.get('Content-Type') || '';
-		if (ct.includes('application/json')) {
-			body = await request.json();
-		} else {
-			const formData = await request.formData();
-			body = Object.fromEntries(formData);
+		try {
+			const ct = request.headers.get('Content-Type') || '';
+			if (ct.includes('application/json')) {
+				body = await request.json();
+			} else {
+				const formData = await request.formData();
+				body = Object.fromEntries(formData);
+			}
+			if (!body || typeof body !== 'object') {
+				return Response.json(AvsResponse.errorResponse(30000, 'Invalid request body'), { status: 400 });
+			}
+		} catch {
+			return Response.json(AvsResponse.errorResponse(30000, 'Malformed request body'), { status: 400 });
 		}
 
 		const verificationPayload = body.verificationPayload;
@@ -186,14 +193,19 @@ export async function handleIndexRoutes(request: Request, env: Env, url: URL): P
 	// POST /callback
 	if (pathname === '/callback' && method === 'POST') {
 		let body: any;
-		const ct = request.headers.get('Content-Type') || '';
-		if (ct.includes('application/json')) {
-			try { body = await request.json(); } catch { body = {}; }
-		} else {
-			try {
+		try {
+			const ct = request.headers.get('Content-Type') || '';
+			if (ct.includes('application/json')) {
+				body = await request.json();
+			} else {
 				const formData = await request.formData();
 				body = Object.fromEntries(formData);
-			} catch { body = {}; }
+			}
+			if (!body || typeof body !== 'object') {
+				return Response.json(AvsResponse.errorResponse(30000, 'Invalid request body'), { status: 400 });
+			}
+		} catch {
+			return Response.json(AvsResponse.errorResponse(30000, 'Malformed request body'), { status: 400 });
 		}
 
 		// Log only non-identifying metadata. Never log the raw body
