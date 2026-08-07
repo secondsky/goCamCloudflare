@@ -29,6 +29,26 @@ function checkRateLimit(ip: string): boolean {
 	return entry.count <= RATE_LIMIT_MAX_REQUESTS;
 }
 
+// CORS allowlist. Add partner origins here — partners must be explicitly
+// registered before their Origin is reflected in Access-Control-Allow-Origin.
+// When the set is empty (or the request Origin is not listed), no CORS header
+// is set at all, which means browsers will block cross-origin reads.
+const ALLOWED_ORIGINS = new Set<string>([
+	// Partner origins go here. Example:
+	// 'https://partner1.example.com',
+]);
+
+/**
+ * Return the CORS origin to allow for this request, or null if none.
+ * null means: do not emit Access-Control-Allow-Origin (block cross-origin).
+ */
+function getAllowedOrigin(request: Request): string | null {
+	const origin = request.headers.get('Origin');
+	if (!origin) return null;
+	if (ALLOWED_ORIGINS.has(origin)) return origin;
+	return null;
+}
+
 export interface Env {
 	// Durable Objects
 	VERIFICATION_SESSION: DurableObjectNamespace<VerificationSession>;
@@ -54,15 +74,17 @@ export default {
 
 		// Handle CORS preflight for API routes
 		if (request.method === 'OPTIONS') {
-			return new Response(null, {
-				status: 204,
-				headers: {
-					'Access-Control-Allow-Origin': '*',
-					'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-					'Access-Control-Allow-Headers': 'Content-Type',
-					'Access-Control-Max-Age': '86400',
-				},
-			});
+			const allowedOrigin = getAllowedOrigin(request);
+			const headers: Record<string, string> = {
+				'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+				'Access-Control-Allow-Headers': 'Content-Type',
+				'Access-Control-Max-Age': '86400',
+			};
+			if (allowedOrigin) {
+				headers['Access-Control-Allow-Origin'] = allowedOrigin;
+				headers['Vary'] = 'Origin';
+			}
+			return new Response(null, { status: 204, headers });
 		}
 
 		// Per-isolate rate limit on POST endpoints (30 requests / 60s per IP)
@@ -83,7 +105,6 @@ export default {
 				'Permissions-Policy',
 				'publickey-credentials-get=(self), publickey-credentials-create=(self), camera=(self)'
 			);
-			newHeaders.set('Access-Control-Allow-Origin', '*');
 			newHeaders.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
 			newHeaders.set('X-Content-Type-Options', 'nosniff');
 			newHeaders.set('Referrer-Policy', 'no-referrer');
@@ -92,6 +113,14 @@ export default {
 				'Content-Security-Policy',
 				"default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; script-src 'self'; connect-src 'self'; frame-ancestors *;"
 			);
+			// CORS: reflect Origin only if it matches the partner allowlist.
+			// When no origin is allowed, omit the header entirely (browsers
+			// will block the cross-origin read rather than silently allow *).
+			const allowedOrigin = getAllowedOrigin(request);
+			if (allowedOrigin) {
+				newHeaders.set('Access-Control-Allow-Origin', allowedOrigin);
+				newHeaders.set('Vary', 'Origin');
+			}
 			return new Response(response.body, {
 				status: response.status,
 				statusText: response.statusText,
