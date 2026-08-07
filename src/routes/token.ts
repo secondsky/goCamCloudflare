@@ -6,6 +6,7 @@ import type { Env } from '../index';
 import { getConfig, type AppConfig } from '../config';
 import { AvsEncryption } from '../lib/encryption';
 import { AvsRandom } from '../lib/random';
+import { callDoJson } from '../lib/do';
 import { getDoStub, createSessionCookie, withCookie, parseCookies } from '../middleware/session';
 import { renderTokenIndex } from '../templates/token-index';
 import { renderTokenEmbedCheck } from '../templates/token-embed-check';
@@ -16,33 +17,6 @@ import UAParser from 'ua-parser-js';
 interface DoStartResponse {
 	sessionId: string;
 	linkBack: string;
-}
-
-async function callDoJson<T>(
-	stub: ReturnType<typeof getDoStub>,
-	action: string,
-	body: Record<string, unknown>
-): Promise<T> {
-	const response = await stub.fetch(
-		new Request(`http://do/${action}`, {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify(body),
-		})
-	);
-
-	let json: any = null;
-	try {
-		json = await response.json();
-	} catch {
-		throw new Error(`Invalid JSON response from DO action "${action}"`);
-	}
-
-	if (!response.ok || (json && typeof json === 'object' && typeof json.error !== 'undefined')) {
-		throw new Error(`DO action "${action}" failed`);
-	}
-
-	return json as T;
 }
 
 export async function handleTokenRoutes(request: Request, env: Env, url: URL): Promise<Response | null> {

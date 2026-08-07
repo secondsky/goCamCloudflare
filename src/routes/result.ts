@@ -7,6 +7,7 @@ import { getConfig } from '../config';
 import { AvsEncryption } from '../lib/encryption';
 import { AvsResponse } from '../lib/response';
 import { constantTimeEqual } from '../lib/crypto-utils';
+import { callDoJson } from '../lib/do';
 import { getDoStub, getSessionContextFromRequest } from '../middleware/session';
 import {
 	isValidStep,
@@ -33,33 +34,6 @@ interface RequestSessionData {
 	sessionStartId: string;
 	payloadHash?: string;
 	payload?: string;
-}
-
-async function callDoJson<T>(
-	stub: ReturnType<typeof getDoStub>,
-	action: string,
-	body: Record<string, unknown>
-): Promise<T> {
-	const response = await stub.fetch(
-		new Request(`http://do/${action}`, {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify(body),
-		})
-	);
-
-	let json: any = null;
-	try {
-		json = await response.json();
-	} catch {
-		throw new Error(`Invalid JSON response from DO action "${action}"`);
-	}
-
-	if (!response.ok || (json && typeof json === 'object' && typeof json.error !== 'undefined')) {
-		throw new Error(`DO action "${action}" failed`);
-	}
-
-	return json as T;
 }
 
 export async function handleResultRoutes(request: Request, env: Env, url: URL): Promise<Response | null> {
@@ -132,33 +106,47 @@ export async function handleResultRoutes(request: Request, env: Env, url: URL): 
 		// Check max test duration
 		if (reqSession.accessTime && (Date.now() - reqSession.accessTime) >= MAX_TEST_DURATION) {
 			sessionResult.errorCode = 30008;
-			await callDoJson<{ success: boolean }>(stub, 'updateState', {
-				sessionId: reqSession.sessionStartId,
-				stateData: sessionResult,
-			});
+			try {
+				await callDoJson<{ success: boolean }>(stub, 'updateState', {
+					sessionId: reqSession.sessionStartId,
+					stateData: sessionResult,
+				});
+			} catch (err) {
+				console.error('DO updateState error:', err);
+			}
 			return Response.json(AvsResponse.errorResponse(30008, 'Test max allowed time expired'));
 		}
 
 		// Verify token (always required — no bypass via deviceLocationVerification)
 		if (!tokenIsValid(token, reqSession.successKey)) {
 			sessionResult.errorCode = 30009;
-			await callDoJson<{ success: boolean }>(stub, 'updateState', {
-				sessionId: reqSession.sessionStartId,
-				stateData: sessionResult,
-			});
+			try {
+				await callDoJson<{ success: boolean }>(stub, 'updateState', {
+					sessionId: reqSession.sessionStartId,
+					stateData: sessionResult,
+				});
+			} catch (err) {
+				console.error('DO updateState error:', err);
+			}
 			return Response.json(AvsResponse.errorResponse(30009, 'Invalid token'));
 		}
 
 		// End session as success
-		const endResult: any = await callDoJson<any>(stub, 'end', {
-			sessionId:       reqSession.sessionStartId,
-			sessionStateInt: SESSION_STATE_SUCCESS,
-			stepIp:          stepId,
-			errorCode:       0,
-			idCountry,
-			idState,
-			idType,
-		});
+		let endResult: any;
+		try {
+			endResult = await callDoJson<any>(stub, 'end', {
+				sessionId:       reqSession.sessionStartId,
+				sessionStateInt: SESSION_STATE_SUCCESS,
+				stepIp:          stepId,
+				errorCode:       0,
+				idCountry,
+				idState,
+				idType,
+			});
+		} catch (err) {
+			console.error('DO end error:', err);
+			return Response.json(AvsResponse.errorResponse(30010, 'Failed to save session data'));
+		}
 
 		if (!endResult || !endResult.payload) {
 			sessionResult.errorCode = 30010;
@@ -229,33 +217,47 @@ export async function handleResultRoutes(request: Request, env: Env, url: URL): 
 		// Check max test duration
 		if (reqSession.accessTime && (Date.now() - reqSession.accessTime) >= MAX_TEST_DURATION) {
 			sessionResult.errorCode = 30012;
-			await callDoJson<{ success: boolean }>(stub, 'updateState', {
-				sessionId: reqSession.sessionStartId,
-				stateData: sessionResult,
-			});
+			try {
+				await callDoJson<{ success: boolean }>(stub, 'updateState', {
+					sessionId: reqSession.sessionStartId,
+					stateData: sessionResult,
+				});
+			} catch (err) {
+				console.error('DO updateState error:', err);
+			}
 			return Response.json(AvsResponse.errorResponse(30012, 'Test max allowed time expired'));
 		}
 
 		// Verify token (always required — no bypass via deviceLocationVerification)
 		if (!tokenIsValid(token, reqSession.failKey)) {
 			sessionResult.errorCode = 30013;
-			await callDoJson<{ success: boolean }>(stub, 'updateState', {
-				sessionId: reqSession.sessionStartId,
-				stateData: sessionResult,
-			});
+			try {
+				await callDoJson<{ success: boolean }>(stub, 'updateState', {
+					sessionId: reqSession.sessionStartId,
+					stateData: sessionResult,
+				});
+			} catch (err) {
+				console.error('DO updateState error:', err);
+			}
 			return Response.json(AvsResponse.errorResponse(30013, 'Invalid token'));
 		}
 
 		// End session as fail
-		const endResult: any = await callDoJson<any>(stub, 'end', {
-			sessionId:       reqSession.sessionStartId,
-			sessionStateInt: SESSION_STATE_FAILED,
-			stepIp:          stepId,
-			errorCode,
-			idCountry,
-			idState,
-			idType,
-		});
+		let endResult: any;
+		try {
+			endResult = await callDoJson<any>(stub, 'end', {
+				sessionId:       reqSession.sessionStartId,
+				sessionStateInt: SESSION_STATE_FAILED,
+				stepIp:          stepId,
+				errorCode,
+				idCountry,
+				idState,
+				idType,
+			});
+		} catch (err) {
+			console.error('DO end error:', err);
+			return Response.json(AvsResponse.errorResponse(30014, 'Failed to save session data'));
+		}
 
 		if (!endResult || typeof endResult.payload !== 'string') {
 			sessionResult.errorCode = 30014;
