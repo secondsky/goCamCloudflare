@@ -15,8 +15,6 @@ import {
 	SESSION_STATE_FAILED,
 } from '../durable-objects/verification-session';
 
-const MAX_TEST_DURATION = 20 * 60 * 1000; // 20 minutes
-
 /**
  * Check that a client-supplied token matches the server-stored key.
  * Exported for unit testing. Uses constant-time comparison to avoid
@@ -107,7 +105,7 @@ export async function handleResultRoutes(request: Request, env: Env, url: URL): 
 		}
 
 		// Check max test duration
-		if (reqSession.accessTime && (Date.now() - reqSession.accessTime) >= MAX_TEST_DURATION) {
+		if (reqSession.accessTime && (Date.now() - reqSession.accessTime) >= config.test.maxDuration) {
 			sessionResult.errorCode = 30008;
 			try {
 				await callDoJson<{ success: boolean }>(stub, 'updateState', {
@@ -218,7 +216,7 @@ export async function handleResultRoutes(request: Request, env: Env, url: URL): 
 		}
 
 		// Check max test duration
-		if (reqSession.accessTime && (Date.now() - reqSession.accessTime) >= MAX_TEST_DURATION) {
+		if (reqSession.accessTime && (Date.now() - reqSession.accessTime) >= config.test.maxDuration) {
 			sessionResult.errorCode = 30012;
 			try {
 				await callDoJson<{ success: boolean }>(stub, 'updateState', {
