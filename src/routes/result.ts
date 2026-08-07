@@ -156,7 +156,7 @@ export async function handleResultRoutes(request: Request, env: Env, url: URL): 
 		const successPayload = endResult.payload;
 
 		// Set the isAgeVerified cookie
-		const cookieValue = `isAgeVerified=${successPayload}; Path=/; Max-Age=${config.cookie.maxAge / 1000}${config.cookie.secure ? '; Secure' : ''}${config.cookie.httpOnly ? '; HttpOnly' : ''}`;
+		const cookieValue = `isAgeVerified=${successPayload}; Path=/; Max-Age=${config.cookie.maxAge / 1000}${config.cookie.secure ? '; Secure' : ''}${config.cookie.httpOnly ? '; HttpOnly' : ''}; SameSite=${config.cookie.sameSite}`;
 
 		const response = Response.json(AvsResponse.successResponse({
 			successPayload,

@@ -17,6 +17,7 @@ export interface AppConfig {
 	cookie: {
 		httpOnly: boolean;
 		secure: boolean;
+		sameSite: 'Lax' | 'Strict' | 'None';
 		maxAge: number;
 	};
 	cacheBuster: number;
@@ -73,9 +74,10 @@ export async function getConfig(env: Env): Promise<AppConfig> {
 		},
 
 		cookie: {
-			httpOnly: false,
+			httpOnly: true,
 			secure: true,
-			maxAge: 30 * 24 * 60 * 60 * 1000,
+			sameSite: 'Lax',
+			maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days in ms (was 30 days)
 		},
 
 		cacheBuster: Date.now(),
