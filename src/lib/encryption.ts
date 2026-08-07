@@ -14,13 +14,14 @@ export class AvsEncryption {
 	private static keyCache = new Map<string, CryptoKey>();
 
 	/**
-	 * Import a raw key string as a CryptoKey for AES-GCM.
-	 * Caches the CryptoKey per key string to avoid re-importing.
+	 * Import a raw key (HKDF-derived bytes) as a CryptoKey for AES-GCM.
+	 * Caches the CryptoKey per key bytes to avoid re-importing.
 	 */
-	private static async importKey(keyStr: string): Promise<CryptoKey> {
-		let cached = AvsEncryption.keyCache.get(keyStr);
+	private static async importKey(keyBytes: Uint8Array): Promise<CryptoKey> {
+		// Cache by a lightweight serialization of the key bytes to avoid re-importing.
+		const cacheKey = Array.from(keyBytes).join(',');
+		let cached = AvsEncryption.keyCache.get(cacheKey);
 		if (cached) return cached;
-		const keyBytes = AvsEncryption.encoder.encode(keyStr);
 		const key = await crypto.subtle.importKey(
 			'raw',
 			keyBytes,
@@ -28,7 +29,7 @@ export class AvsEncryption {
 			false,
 			['encrypt', 'decrypt']
 		);
-		AvsEncryption.keyCache.set(keyStr, key);
+		AvsEncryption.keyCache.set(cacheKey, key);
 		return key;
 	}
 
@@ -56,8 +57,8 @@ export class AvsEncryption {
 	 * Encrypt an object to a string in the format: ivHex|:encryptedHex
 	 * Compatible with the original Node.js implementation.
 	 */
-	static async encryptObject(object: object, keyStr: string): Promise<string> {
-		const key = await AvsEncryption.importKey(keyStr);
+	static async encryptObject(object: object, keyBytes: Uint8Array): Promise<string> {
+		const key = await AvsEncryption.importKey(keyBytes);
 		const iv = crypto.getRandomValues(new Uint8Array(12));
 
 		const plaintext = AvsEncryption.encoder.encode(JSON.stringify(object));
@@ -81,8 +82,8 @@ export class AvsEncryption {
 	 * So split(':') gives [ivHex + '|', encryptedHex]
 	 * We trim the trailing '|' from the iv part.
 	 */
-	static async decryptString(encryptedString: string, keyStr: string): Promise<any> {
-		const key = await AvsEncryption.importKey(keyStr);
+	static async decryptString(encryptedString: string, keyBytes: Uint8Array): Promise<any> {
+		const key = await AvsEncryption.importKey(keyBytes);
 
 		const separatorIndex = encryptedString.indexOf(':');
 		// iv part is everything before ':', minus the trailing '|'

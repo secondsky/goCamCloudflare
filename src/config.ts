@@ -1,8 +1,11 @@
 import type { Env } from './index';
+import { hkdfDerive } from './lib/crypto-utils';
 
 export interface AppConfig {
 	encryption: {
-		key: string;
+		key: string;        // raw passphrase (kept for backwards compat / logging)
+		aesKey: Uint8Array; // HKDF-derived AES key
+		hmacKey: Uint8Array; // HKDF-derived HMAC key
 		algorithm: string;
 	};
 	storage: {
@@ -27,7 +30,7 @@ let _cachedConfig: AppConfig | null = null;
 // prevents anyone from deploying with a key that is already in git history.
 const LEAKED_EXAMPLE_KEY = 'zIkmW2zEgzlTLTRC5xeMbcOhHcE5sBHB';
 
-export function getConfig(env: Env): AppConfig {
+export async function getConfig(env: Env): Promise<AppConfig> {
 	if (_cachedConfig) return _cachedConfig;
 
 	if (!env.ENCRYPTION_KEY) {
@@ -48,10 +51,17 @@ export function getConfig(env: Env): AppConfig {
 		);
 	}
 
+	// Derive separate purpose-bound subkeys via HKDF-SHA256 so that AES and
+	// HMAC never share key material. Derived once and cached with the config.
+	const aesKey = await hkdfDerive(env.ENCRYPTION_KEY, 'avs/aes/v1', 32);
+	const hmacKey = await hkdfDerive(env.ENCRYPTION_KEY, 'avs/hmac/v1', 32);
+
 	_cachedConfig = {
 		encryption: {
 			key: env.ENCRYPTION_KEY,
-			algorithm: env.ENCRYPTION_ALGORITHM || 'aes-256-cbc',
+			aesKey,
+			hmacKey,
+			algorithm: env.ENCRYPTION_ALGORITHM || 'aes-256-gcm',
 		},
 
 		storage: {

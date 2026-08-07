@@ -14,7 +14,7 @@ import { VERIFICATION_IFRAME_V1, SESSION_STATE_SUCCESS } from '../durable-object
 export async function handleIndexRoutes(request: Request, env: Env, url: URL): Promise<Response | null> {
 	const { pathname } = url;
 	const method = request.method;
-	const config = getConfig(env);
+	const config = await getConfig(env);
 
 	// GET /
 	if (pathname === '/' && method === 'GET') {
@@ -119,7 +119,7 @@ export async function handleIndexRoutes(request: Request, env: Env, url: URL): P
 				callbackUrl:         callbackUrl,
 				creationTimestamp:    creationTimestamp,
 			},
-			config.encryption.key
+			config.encryption.aesKey
 		);
 
 		// Build URLs
@@ -155,7 +155,7 @@ export async function handleIndexRoutes(request: Request, env: Env, url: URL): P
 
 		let payloadParsed: any;
 		try {
-			payloadParsed = await AvsEncryption.decryptString(verificationPayload, config.encryption.key);
+			payloadParsed = await AvsEncryption.decryptString(verificationPayload, config.encryption.aesKey);
 		} catch {
 			return Response.json(AvsResponse.errorResponse(30002, 'Verification payload integrity check failed'));
 		}

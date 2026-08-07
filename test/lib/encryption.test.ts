@@ -1,9 +1,19 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import { AvsEncryption } from '../../src/lib/encryption';
+import { hkdfDerive } from '../../src/lib/crypto-utils';
 
-const TEST_KEY = 'a'.repeat(32); // 32 bytes
-
+// Derive the AES keys the same way production does (HKDF out of a 32-byte
+// passphrase). Different contexts (aes vs hmac) yield independent keys.
+// Derived once in beforeAll to keep tests fast.
 describe('AvsEncryption AES-GCM', () => {
+	let TEST_KEY: Uint8Array;
+	let WRONG_KEY: Uint8Array;
+
+	beforeAll(async () => {
+		TEST_KEY = await hkdfDerive('a'.repeat(32), 'avs/aes/v1', 32);
+		WRONG_KEY = await hkdfDerive('b'.repeat(32), 'avs/aes/v1', 32);
+	});
+
 	it('encrypts and decrypts an object round-trip', async () => {
 		const obj = { foo: 'bar', num: 42, nested: { a: true } };
 		const encrypted = await AvsEncryption.encryptObject(obj, TEST_KEY);
@@ -31,6 +41,6 @@ describe('AvsEncryption AES-GCM', () => {
 
 	it('fails to decrypt with the wrong key', async () => {
 		const encrypted = await AvsEncryption.encryptObject({ x: 1 }, TEST_KEY);
-		await expect(AvsEncryption.decryptString(encrypted, 'b'.repeat(32))).rejects.toThrow();
+		await expect(AvsEncryption.decryptString(encrypted, WRONG_KEY)).rejects.toThrow();
 	});
 });

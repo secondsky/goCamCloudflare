@@ -1,5 +1,6 @@
 import { DurableObject } from 'cloudflare:workers';
 import { AvsEncryption } from '../lib/encryption';
+import { hkdfDerive } from '../lib/crypto-utils';
 import type { Env } from '../index';
 
 // ─── Constants ───
@@ -100,9 +101,23 @@ export function getStateMap(): Record<number, string> {
 
 export class VerificationSession extends DurableObject<Env> {
 	private initialized = false;
+	private _aesKeyPromise: Promise<Uint8Array> | null = null;
 
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env);
+	}
+
+	/**
+	 * Derive (and cache) the HKDF AES subkey for this DO instance.
+	 * The DO reads ENCRYPTION_KEY directly from env (it does not go through
+	 * getConfig), so it derives its own AES key with the same context string
+	 * ('avs/aes/v1') used by getConfig. Cached so the HKDF runs once per DO.
+	 */
+	private async getAesKey(): Promise<Uint8Array> {
+		if (!this._aesKeyPromise) {
+			this._aesKeyPromise = hkdfDerive(this.env.ENCRYPTION_KEY, 'avs/aes/v1', 32);
+		}
+		return this._aesKeyPromise;
 	}
 
 	private ensureInitialized(): void {
@@ -211,8 +226,8 @@ export class VerificationSession extends DurableObject<Env> {
 	private async startSession(payload: string): Promise<StartResult | null> {
 		this.ensureInitialized();
 
-		const encryptionKey = this.env.ENCRYPTION_KEY;
-		const payloadParsed = await AvsEncryption.decryptString(payload, encryptionKey);
+		const aesKey = await this.getAesKey();
+		const payloadParsed = await AvsEncryption.decryptString(payload, aesKey);
 		const sessionId = crypto.randomUUID();
 		const payloadHash = payload.substring(0, 64);
 
@@ -286,7 +301,7 @@ export class VerificationSession extends DurableObject<Env> {
 	): Promise<{ payload: string } | null> {
 		this.ensureInitialized();
 
-		const encryptionKey = this.env.ENCRYPTION_KEY;
+		const aesKey = await this.getAesKey();
 		const sessionData = this.getById(sessionId);
 		if (!sessionData) return null;
 
@@ -325,7 +340,7 @@ export class VerificationSession extends DurableObject<Env> {
 		);
 
 		// Build result payload (same format as original)
-		const decryptedPayload = await AvsEncryption.decryptString(sessionData.payload, encryptionKey);
+		const decryptedPayload = await AvsEncryption.decryptString(sessionData.payload, aesKey);
 		decryptedPayload.userIpStr          = '127.0.0.1';
 		decryptedPayload.userIpCountry      = 'A1';
 		decryptedPayload.userData           = sessionData.userData;
@@ -338,7 +353,7 @@ export class VerificationSession extends DurableObject<Env> {
 		};
 
 		return {
-			payload: await AvsEncryption.encryptObject(decryptedPayload, encryptionKey),
+			payload: await AvsEncryption.encryptObject(decryptedPayload, aesKey),
 		};
 	}
 

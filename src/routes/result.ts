@@ -61,7 +61,7 @@ async function callDoJson<T>(
 export async function handleResultRoutes(request: Request, env: Env, url: URL): Promise<Response | null> {
 	const { pathname } = url;
 	const method = request.method;
-	const config = getConfig(env);
+	const config = await getConfig(env);
 
 	if (method !== 'POST') return null;
 
@@ -80,7 +80,7 @@ export async function handleResultRoutes(request: Request, env: Env, url: URL): 
 	}
 
 	// Get payloadHash + request session id from signed cookie.
-	const sessionContext = await getSessionContextFromRequest(request, config.encryption.key);
+	const sessionContext = await getSessionContextFromRequest(request, config.encryption.hmacKey);
 
 	// POST /result/success
 	if (pathname === '/result/success') {
