@@ -1,0 +1,117 @@
+/**
+ * AES-256-GCM encryption/decryption using the Web Crypto API.
+ * All methods are async (Web Crypto is promise-based).
+ *
+ * AES-GCM provides authenticated encryption: the 16-byte GCM tag appended to
+ * the ciphertext is verified on decrypt, so any tampering is rejected. (The
+ * previous AES-CBC implementation had no MAC, leaving ciphertexts malleable.)
+ */
+
+export class AvsEncryption {
+
+	private static encoder = new TextEncoder();
+	private static decoder = new TextDecoder();
+	private static keyCache = new Map<string, CryptoKey>();
+
+	/**
+	 * Import a raw key string as a CryptoKey for AES-GCM.
+	 * Caches the CryptoKey per key string to avoid re-importing.
+	 */
+	private static async importKey(keyStr: string): Promise<CryptoKey> {
+		let cached = AvsEncryption.keyCache.get(keyStr);
+		if (cached) return cached;
+		const keyBytes = AvsEncryption.encoder.encode(keyStr);
+		const key = await crypto.subtle.importKey(
+			'raw',
+			keyBytes,
+			{ name: 'AES-GCM' },
+			false,
+			['encrypt', 'decrypt']
+		);
+		AvsEncryption.keyCache.set(keyStr, key);
+		return key;
+	}
+
+	/**
+	 * Convert a hex string to a Uint8Array.
+	 */
+	private static hexToBytes(hex: string): Uint8Array {
+		const bytes = new Uint8Array(hex.length / 2);
+		for (let i = 0; i < hex.length; i += 2) {
+			bytes[i / 2] = parseInt(hex.substring(i, i + 2), 16);
+		}
+		return bytes;
+	}
+
+	/**
+	 * Convert a Uint8Array to a hex string.
+	 */
+	private static bytesToHex(bytes: Uint8Array): string {
+		return Array.from(bytes)
+			.map(b => b.toString(16).padStart(2, '0'))
+			.join('');
+	}
+
+	/**
+	 * Encrypt an object to a string in the format: ivHex|:encryptedHex
+	 * Compatible with the original Node.js implementation.
+	 */
+	static async encryptObject(object: object, keyStr: string): Promise<string> {
+		const key = await AvsEncryption.importKey(keyStr);
+		const iv = crypto.getRandomValues(new Uint8Array(12));
+
+		const plaintext = AvsEncryption.encoder.encode(JSON.stringify(object));
+
+		const encrypted = await crypto.subtle.encrypt(
+			{ name: 'AES-GCM', iv },
+			key,
+			plaintext
+		);
+
+		const ivHex = AvsEncryption.bytesToHex(iv);
+		const encryptedHex = AvsEncryption.bytesToHex(new Uint8Array(encrypted));
+
+		return ivHex + '|:' + encryptedHex;
+	}
+
+	/**
+	 * Decrypt a string in the format: ivHex|:encryptedHex (with '|' as separator)
+	 * The original Node.js code splits on ':' —
+	 * iv part ends with '|', encrypted part follows after ':'
+	 * So split(':') gives [ivHex + '|', encryptedHex]
+	 * We trim the trailing '|' from the iv part.
+	 */
+	static async decryptString(encryptedString: string, keyStr: string): Promise<any> {
+		const key = await AvsEncryption.importKey(keyStr);
+
+		const separatorIndex = encryptedString.indexOf(':');
+		// iv part is everything before ':', minus the trailing '|'
+		const ivHex = encryptedString.substring(0, separatorIndex).replace(/\|$/, '');
+		const encryptedHex = encryptedString.substring(separatorIndex + 1);
+
+		const iv = AvsEncryption.hexToBytes(ivHex);
+		const encryptedData = AvsEncryption.hexToBytes(encryptedHex);
+
+		const decrypted = await crypto.subtle.decrypt(
+			{ name: 'AES-GCM', iv },
+			key,
+			encryptedData
+		);
+
+		return JSON.parse(AvsEncryption.decoder.decode(decrypted));
+	}
+
+	/**
+	 * Base64 encode an object to a string.
+	 */
+	static base64EncodeObject(object: object): string {
+		return btoa(JSON.stringify(object));
+	}
+
+	/**
+	 * Base64 decode a string to a parsed object.
+	 */
+	static base64DecodeString(encodedString: string): any {
+		return JSON.parse(atob(encodedString));
+	}
+}
