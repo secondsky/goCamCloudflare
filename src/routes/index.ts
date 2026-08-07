@@ -79,12 +79,22 @@ export async function handleIndexRoutes(request: Request, env: Env, url: URL): P
 		const userAgent         = request.headers.get('User-Agent') || '';
 		const linkBack          = '/';
 		const requestCf = request.cf as { country?: string; regionCode?: string } | undefined;
-		const userIpCountry     = requestCf?.country || 'US';
-		const userIpState       = requestCf?.regionCode || 'TX';
+		const userIpCountry     = requestCf?.country;
+		const userIpState       = requestCf?.regionCode;
+		const userIp            = request.headers.get('CF-Connecting-IP');
+
+		// Fail closed: this service must run behind the Cloudflare edge, which
+		// populates request.cf.country/regionCode and the CF-Connecting-IP header.
+		// If any are missing, reject rather than silently defaulting to US/TX.
+		if (!userIpCountry || !userIpState || !userIp) {
+			return Response.json(
+				AvsResponse.errorResponse(30000, 'Unable to determine client location. This service must be accessed via the Cloudflare edge.')
+			);
+		}
+
 		const creationTimestamp = Date.now();
 		const testPathRedirect  = '/token';
 		const testPathIframe    = '/token/iframeCheck';
-		const userIp            = request.headers.get('CF-Connecting-IP') || '127.0.0.1';
 		const websiteHostname   = url.hostname;
 
 		const requestPayload = await AvsEncryption.encryptObject(
