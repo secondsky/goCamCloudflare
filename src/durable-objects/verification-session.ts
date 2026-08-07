@@ -202,7 +202,7 @@ export class VerificationSession extends DurableObject<Env> {
 			}
 		} catch (err) {
 			console.error('DO error:', err);
-			return Response.json({ error: String(err) }, { status: 500 });
+			return Response.json({ error: 'internal_error' }, { status: 500 });
 		}
 	}
 
