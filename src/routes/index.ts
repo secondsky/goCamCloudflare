@@ -186,13 +186,17 @@ export async function handleIndexRoutes(request: Request, env: Env, url: URL): P
 			} catch { body = {}; }
 		}
 
-		// Log to console (visible via Workers Logs / wrangler tail)
-		console.log('Callback received:', JSON.stringify(body));
+		// Log only non-identifying metadata. Never log the raw body
+		// (it contains user IP, userData, device info — PII).
+		const callbackState = typeof body.stateInt !== 'undefined' ? String(body.stateInt) : 'unknown';
+		const sessionId = typeof body.sessionId === 'string' ? body.sessionId : '';
 
-		// Write to Analytics Engine for metrics
+		console.log('Callback received', { stateInt: callbackState, sessionId });
+
+		// Write only non-identifying fields to Analytics Engine
 		try {
 			env.ANALYTICS.writeDataPoint({
-				blobs: ['callback_received', JSON.stringify(body).substring(0, 256)],
+				blobs: ['callback_received', callbackState, sessionId],
 				doubles: [Date.now()],
 				indexes: ['callback'],
 			});
