@@ -61,3 +61,64 @@ describe('computePayloadHash', () => {
 			.not.toBe(await AvsEncryption.computePayloadHash('abc123|:cafebabe'));
 	});
 });
+
+describe('decryptString edge cases', () => {
+	let TEST_KEY: Uint8Array;
+
+	beforeAll(async () => {
+		TEST_KEY = await hkdfDerive('a'.repeat(32), 'avs/aes/v1', 32);
+	});
+
+	it('throws when the separator is missing (no ":")', async () => {
+		// indexOf(':') returns -1 → ivHex becomes '' and ciphertext becomes the
+		// whole string. GCM decrypt should fail on the garbage inputs.
+		await expect(AvsEncryption.decryptString('abc', TEST_KEY)).rejects.toThrow();
+	});
+
+	it('throws when the separator is at position 0 (empty IV hex)', async () => {
+		// ivHex is '' (empty), ciphertext is 'abc'. Both decode to empty/garbage
+		// and GCM decrypt rejects.
+		await expect(AvsEncryption.decryptString(':abc', TEST_KEY)).rejects.toThrow();
+	});
+
+	it('throws on an empty string', async () => {
+		await expect(AvsEncryption.decryptString('', TEST_KEY)).rejects.toThrow();
+	});
+});
+
+describe('base64 encode/decode', () => {
+	it('round-trips an object through base64EncodeObject and base64DecodeString', () => {
+		const obj = { a: 1, b: 'hello' };
+		const encoded = AvsEncryption.base64EncodeObject(obj);
+		const decoded = AvsEncryption.base64DecodeString(encoded);
+		expect(decoded).toEqual(obj);
+	});
+
+	it('throws when encoding an object containing non-Latin1 characters', () => {
+		// btoa() only accepts Latin1 (code points U+0000–U+00FF). A character
+		// outside that range — e.g. the snowman U+2603 — makes btoa throw.
+		// (Note: 'é' U+00E9 is within Latin1 and does NOT throw in this runtime.)
+		expect(() => AvsEncryption.base64EncodeObject({ text: 'snowman \u2603' })).toThrow();
+	});
+});
+
+describe('computePayloadHash behavioral implication for dedup', () => {
+	let TEST_KEY: Uint8Array;
+
+	beforeAll(async () => {
+		TEST_KEY = await hkdfDerive('a'.repeat(32), 'avs/aes/v1', 32);
+	});
+
+	it('produces different hashes for re-encryptions of the same plaintext', async () => {
+		// Each encryptObject call uses a fresh random IV, so the ciphertext — and
+		// therefore the SHA-256 of the full ciphertext string — differs every
+		// time. This documents that re-encrypting the same logical payload yields
+		// a new content hash (relevant for any dedup keyed on this hash).
+		const a = await AvsEncryption.encryptObject({ x: 1 }, TEST_KEY);
+		const b = await AvsEncryption.encryptObject({ x: 1 }, TEST_KEY);
+		const hashA = await AvsEncryption.computePayloadHash(a);
+		const hashB = await AvsEncryption.computePayloadHash(b);
+		expect(a).not.toBe(b);
+		expect(hashA).not.toBe(hashB);
+	});
+});
