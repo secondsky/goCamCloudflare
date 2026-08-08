@@ -1,4 +1,3 @@
-// @vitest-environment workers
 /// <reference types="@cloudflare/vitest-pool-workers" />
 import { describe, it, expect } from 'vitest';
 import { SELF } from 'cloudflare:test';
@@ -68,10 +67,21 @@ describe('Worker fetch handler — POST /getVerificationPayloadAndUrl error hand
 	});
 
 	it('rejects an SSRF callback URL pointing at a private IP', async () => {
+		// Include all required color config fields so the route progresses past
+		// the field-presence check to the SSRF validation of callbackUrl.
+		const formBody = new URLSearchParams({
+			colorConfigBodyBackgroundInput: '#fff',
+			colorConfigBodyForegroundInput: '#000',
+			colorConfigButtonBackgroundInput: '#00f',
+			colorConfigButtonForegroundInput: '#fff',
+			colorConfigButtonForegroundCTAInput: '#f00',
+			callbackUrl: 'http://127.0.0.1',
+			demoPageUrl: 'https://example.com',
+		});
 		const response = await SELF.fetch('https://example.com/getVerificationPayloadAndUrl', {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-			body: 'callbackUrl=http://127.0.0.1&demoPageUrl=https://example.com',
+			body: formBody.toString(),
 		});
 
 		// 127.0.0.0/8 is in the SSRF blocklist; the route returns
