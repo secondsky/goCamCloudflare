@@ -37,6 +37,7 @@
 	// Static assets
 	"assets": {
 		"directory": "./app/frontend",
-		"binding": "ASSETS"
+		"binding": "ASSETS",
+		"run_worker_first": true
 	}
 }

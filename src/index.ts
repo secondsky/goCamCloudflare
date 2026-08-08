@@ -139,13 +139,15 @@ export default {
 			else if (pathname.startsWith('/result')) {
 				response = await handleResultRoutes(request, env, url);
 			}
-			// Index routes: /, /getVerificationPayloadAndUrl, /validateVerificationPayload, /callback, /test
+			// Index routes: /, /getVerificationPayloadAndUrl, /validateVerificationPayload, /callback, /test, /terms
 			else if (
 				pathname === '/' ||
 				pathname === '/getVerificationPayloadAndUrl' ||
 				pathname === '/validateVerificationPayload' ||
 				pathname === '/callback' ||
-				pathname === '/test'
+				pathname === '/test' ||
+				pathname === '/terms' ||
+				pathname === '/terms/'
 			) {
 				response = await handleIndexRoutes(request, env, url);
 			}

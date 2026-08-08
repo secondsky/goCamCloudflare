@@ -35,6 +35,42 @@ export async function handleIndexRoutes(request: Request, env: Env, url: URL): P
 		return new Response('test');
 	}
 
+	// GET /terms or /terms/ — standalone terms page (fallback for when JS is
+	// unavailable; the token page shows an inline version via JS when JS works)
+	if ((pathname === '/terms' || pathname === '/terms/') && method === 'GET') {
+		const html = `<!DOCTYPE HTML>
+<html lang="en" xml:lang="en">
+<head>
+	<meta name="robots" content="noindex">
+	<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<link rel="icon" href="/static/favicon.ico">
+	<title>Terms and Conditions — Go.cam</title>
+	<link rel="stylesheet" href="/static/css/main.css">
+	<link rel="stylesheet" href="/static/css/vendor/font-awesome-4.7.0/css/font-awesome.min.css">
+</head>
+<body>
+	<div id="avsMainContainer">
+		<div class="page layoutStaticPage layoutTextBlock">
+			<div class="headerLogo">
+				<img src="/static/img/logo.svg">
+			</div>
+			<h1 class="introHeading">Terms and Conditions</h1>
+			<p>If You are referred to GO.CAM by one of our Business Customers and wish to use Age-verification Solution rendered by GO.CAM, You are accepting these Terms and Conditions.</p>
+			<div class="submitArea">
+				<a href="/" class="button layoutGreen">
+					<i class="fa fa-chevron-left" aria-hidden="true"></i>Go Back
+				</a>
+			</div>
+		</div>
+	</div>
+</body>
+</html>`;
+		return new Response(html, {
+			headers: { 'Content-Type': 'text/html; charset=utf-8' },
+		});
+	}
+
 	// POST /getVerificationPayloadAndUrl
 	if (pathname === '/getVerificationPayloadAndUrl' && method === 'POST') {
 		const formData = await request.formData();
