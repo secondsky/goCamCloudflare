@@ -72,10 +72,9 @@ describe('isSafeCallbackUrl — SSRF bypass vectors', () => {
 	});
 
 	describe('IPv6 edge cases', () => {
-		// KNOWN BUG: [::] (IPv6 unspecified / "any") is not blocked.
-		// It is the IPv6 equivalent of 0.0.0.0 and on some systems binds to
-		// all interfaces including loopback, making it an SSRF vector.
-		it.fails('rejects [::] (IPv6 any/unspecified address)', () => {
+		// [::] (IPv6 unspecified / "any") is the IPv6 equivalent of 0.0.0.0.
+		// It was previously not blocked — now rejected as a private range.
+		it('rejects [::] (IPv6 any/unspecified address)', () => {
 			const result = isSafeCallbackUrl('http://[::]/');
 			expect(result.ok).toBe(false);
 		});
