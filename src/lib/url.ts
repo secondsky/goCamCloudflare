@@ -56,6 +56,10 @@ export function isSafeCallbackUrl(urlStr: string): CallbackUrlResult {
 	if (v6 === '[::1]' || v6 === '[0:0:0:0:0:0:0:1]') {
 		return { ok: false, reason: 'loopback' };
 	}
+	// [::] is the IPv6 unspecified address ("any"), equivalent to 0.0.0.0.
+	if (v6 === '[::]' || v6 === '[0:0:0:0:0:0:0:0]') {
+		return { ok: false, reason: 'private_range' };
+	}
 	if (v6.startsWith('[fc') || v6.startsWith('[fd') || v6.startsWith('[fe80')) {
 		return { ok: false, reason: 'private_range' };
 	}
