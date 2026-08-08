@@ -58,5 +58,13 @@ typings/
 # dotenv environment variables file
 .env
 
+# Cloudflare Workers local secrets
+.dev.vars
+.dev.vars.*
+
 tmp/
 .DS_Store
+
+# Tooling scratch directories
+.superpowers/
+.zcode/

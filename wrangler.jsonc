@@ -1,0 +1,42 @@
+{
+	"name": "gocam",
+	"main": "src/index.ts",
+	"compatibility_date": "2025-04-01",
+
+	// Environment variables (non-secret)
+	"vars": {
+		"ENABLE_FRONTEND_DEBUG": "false"
+	},
+
+	// Durable Objects
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "VERIFICATION_SESSION",
+				"class_name": "VerificationSession"
+			}
+		]
+	},
+
+	// Durable Object migrations
+	"migrations": [
+		{
+			"tag": "v1",
+			"new_sqlite_classes": ["VerificationSession"]
+		}
+	],
+
+	// Analytics Engine (for metrics/dashboards)
+	"analytics_engine_datasets": [
+		{
+			"binding": "ANALYTICS",
+			"dataset": "gocam_events"
+		}
+	],
+
+	// Static assets
+	"assets": {
+		"directory": "./app/frontend",
+		"binding": "ASSETS"
+	}
+}
