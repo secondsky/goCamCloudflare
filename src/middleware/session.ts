@@ -153,7 +153,7 @@ export async function createSessionCookie(
 ): Promise<string> {
 	const sessionValue = `${payloadHash}${SESSION_SEPARATOR}${requestSessionId}`;
 	const signedValue = await signSessionId(sessionValue, hmacKey);
-	return `${COOKIE_NAME}=${signedValue}; Path=/; HttpOnly; SameSite=Lax; Max-Age=1200`;
+	return `${COOKIE_NAME}=${signedValue}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=1200`;
 }
 
 /**

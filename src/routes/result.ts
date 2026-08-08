@@ -104,8 +104,9 @@ export async function handleResultRoutes(request: Request, env: Env, url: URL): 
 			return Response.json(AvsResponse.errorResponse(30010, 'Session not found'));
 		}
 
-		// Check max test duration
-		if (reqSession.accessTime && (Date.now() - reqSession.accessTime) >= config.test.maxDuration) {
+		// Check max test duration — treat missing accessTime as expired
+		// (fail closed) rather than silently bypassing the time limit.
+		if (!reqSession.accessTime || (Date.now() - reqSession.accessTime) >= config.test.maxDuration) {
 			sessionResult.errorCode = 30008;
 			try {
 				await callDoJson<{ success: boolean }>(stub, 'updateState', {
@@ -215,8 +216,8 @@ export async function handleResultRoutes(request: Request, env: Env, url: URL): 
 			return Response.json(AvsResponse.errorResponse(30014, 'Session not found'));
 		}
 
-		// Check max test duration
-		if (reqSession.accessTime && (Date.now() - reqSession.accessTime) >= config.test.maxDuration) {
+		// Check max test duration — treat missing accessTime as expired
+		if (!reqSession.accessTime || (Date.now() - reqSession.accessTime) >= config.test.maxDuration) {
 			sessionResult.errorCode = 30012;
 			try {
 				await callDoJson<{ success: boolean }>(stub, 'updateState', {

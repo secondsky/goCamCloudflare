@@ -72,33 +72,7 @@ export default {
 		const url = new URL(request.url);
 		const { pathname } = url;
 
-		// Handle CORS preflight for API routes
-		if (request.method === 'OPTIONS') {
-			const allowedOrigin = getAllowedOrigin(request);
-			const headers: Record<string, string> = {
-				'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-				'Access-Control-Allow-Headers': 'Content-Type',
-				'Access-Control-Max-Age': '86400',
-			};
-			if (allowedOrigin) {
-				headers['Access-Control-Allow-Origin'] = allowedOrigin;
-				headers['Vary'] = 'Origin';
-			}
-			return new Response(null, { status: 204, headers });
-		}
-
-		// Per-isolate rate limit on POST endpoints (30 requests / 60s per IP)
-		if (request.method === 'POST') {
-			const clientIp = request.headers.get('CF-Connecting-IP') || 'unknown';
-			if (!checkRateLimit(clientIp)) {
-				return new Response(JSON.stringify({ error: 'rate_limited' }), {
-					status: 429,
-					headers: { 'Content-Type': 'application/json', 'Retry-After': '60' },
-				});
-			}
-		}
-
-		// Set security headers on all responses
+		// Set security headers on all responses (including early returns)
 		const addSecurityHeaders = (response: Response): Response => {
 			const newHeaders = new Headers(response.headers);
 			newHeaders.set(
@@ -127,6 +101,32 @@ export default {
 				headers: newHeaders,
 			});
 		};
+
+		// Handle CORS preflight for API routes
+		if (request.method === 'OPTIONS') {
+			const allowedOrigin = getAllowedOrigin(request);
+			const headers: Record<string, string> = {
+				'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+				'Access-Control-Allow-Headers': 'Content-Type',
+				'Access-Control-Max-Age': '86400',
+			};
+			if (allowedOrigin) {
+				headers['Access-Control-Allow-Origin'] = allowedOrigin;
+				headers['Vary'] = 'Origin';
+			}
+			return addSecurityHeaders(new Response(null, { status: 204, headers }));
+		}
+
+		// Per-isolate rate limit on POST endpoints (30 requests / 60s per IP)
+		if (request.method === 'POST') {
+			const clientIp = request.headers.get('CF-Connecting-IP') || 'unknown';
+			if (!checkRateLimit(clientIp)) {
+				return addSecurityHeaders(new Response(JSON.stringify({ error: 'rate_limited' }), {
+					status: 429,
+					headers: { 'Content-Type': 'application/json', 'Retry-After': '60' },
+				}));
+			}
+		}
 
 		try {
 			let response: Response | null = null;
@@ -158,7 +158,7 @@ export default {
 			try {
 				const assetResponse = await env.ASSETS.fetch(request);
 				if (assetResponse.status !== 404) {
-					return assetResponse;
+					return addSecurityHeaders(assetResponse);
 				}
 			} catch {
 				// Asset fetch failed, fall through to 404
@@ -168,7 +168,7 @@ export default {
 			return addSecurityHeaders(new Response('404', { status: 404 }));
 		} catch (err) {
 			console.error('Unhandled error:', err);
-			return new Response('Internal Server Error', { status: 500 });
+			return addSecurityHeaders(new Response('Internal Server Error', { status: 500 }));
 		}
 	},
 };

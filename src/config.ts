@@ -26,13 +26,19 @@ export interface AppConfig {
 }
 
 let _cachedConfig: AppConfig | null = null;
+let _cachedConfigKey: string | null = null;
 
 // Known leaked key that was shipped in .env.example. Rejecting it at boot
 // prevents anyone from deploying with a key that is already in git history.
-const LEAKED_EXAMPLE_KEY = 'zIkmW2zEgzlTLTRC5xeMbcOhHcE5sBHB';
+// Exported so the Durable Object can apply the same check.
+export const LEAKED_EXAMPLE_KEY = 'zIkmW2zEgzlTLTRC5xeMbcOhHcE5sBHB';
 
 export async function getConfig(env: Env): Promise<AppConfig> {
-	if (_cachedConfig) return _cachedConfig;
+	// Invalidate the cache if ENCRYPTION_KEY changed (e.g. after a secret
+	// rotation via wrangler secret put). A warm isolate that retains the
+	// old key would silently fail to decrypt payloads encrypted with the
+	// new key.
+	if (_cachedConfig && _cachedConfigKey === env.ENCRYPTION_KEY) return _cachedConfig;
 
 	if (!env.ENCRYPTION_KEY) {
 		throw new Error('ENCRYPTION_KEY is not set. Set it via wrangler secret put or .dev.vars');
@@ -57,6 +63,7 @@ export async function getConfig(env: Env): Promise<AppConfig> {
 	const aesKey = await hkdfDerive(env.ENCRYPTION_KEY, 'avs/aes/v1', 32);
 	const hmacKey = await hkdfDerive(env.ENCRYPTION_KEY, 'avs/hmac/v1', 32);
 
+	_cachedConfigKey = env.ENCRYPTION_KEY;
 	_cachedConfig = {
 		encryption: {
 			key: env.ENCRYPTION_KEY,

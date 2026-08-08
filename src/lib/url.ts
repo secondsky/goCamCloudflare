@@ -8,6 +8,7 @@
  */
 
 const PRIVATE_IPV4_PATTERNS: RegExp[] = [
+	/^0\./,                           // 0.0.0.0/8 ("this host" / SSRF bypass)
 	/^10\./,                          // 10.0.0.0/8
 	/^127\./,                         // 127.0.0.0/8
 	/^169\.254\./,                    // 169.254.0.0/16 (link-local + cloud metadata)
@@ -48,11 +49,32 @@ export function isSafeCallbackUrl(urlStr: string): CallbackUrlResult {
 		}
 	}
 
-	// IPv6 loopback / link-local / unique-local
-	if (hostname === '[::1]' || hostname === '[0:0:0:0:0:0:0:1]') {
+	// IPv6 loopback / link-local / unique-local (case-insensitive — the
+	// hostname is already lowercased above, but IPv6 literals from URL
+	// parsing may retain original case inside the brackets).
+	const v6 = hostname.toLowerCase();
+	if (v6 === '[::1]' || v6 === '[0:0:0:0:0:0:0:1]') {
 		return { ok: false, reason: 'loopback' };
 	}
-	if (hostname.startsWith('[fc') || hostname.startsWith('[fd') || hostname.startsWith('[fe80')) {
+	if (v6.startsWith('[fc') || v6.startsWith('[fd') || v6.startsWith('[fe80')) {
+		return { ok: false, reason: 'private_range' };
+	}
+
+	// IPv4-mapped IPv6: [::ffff:a.b.c.d] — extract the embedded IPv4
+	// and re-run the IPv4 private-range checks. The URL API may convert
+	// dotted-quad to hex (e.g. 169.254 → a9fe), so we check both forms.
+	const v4MappedDotted = v6.match(/^\[::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\]$/);
+	if (v4MappedDotted) {
+		for (const pattern of PRIVATE_IPV4_PATTERNS) {
+			if (pattern.test(v4MappedDotted[1])) {
+				return { ok: false, reason: 'private_range' };
+			}
+		}
+	}
+	// Hex form: [::ffff:a9fe:a9fe] = [::ffff:169.254.169.254] (cloud metadata)
+	// Block all IPv4-mapped IPv6 addresses as a conservative default — they
+	// are almost never legitimate callback targets and are a known SSRF vector.
+	if (v6.startsWith('[::ffff:')) {
 		return { ok: false, reason: 'private_range' };
 	}
 

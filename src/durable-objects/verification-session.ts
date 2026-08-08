@@ -1,6 +1,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import { AvsEncryption } from '../lib/encryption';
 import { hkdfDerive } from '../lib/crypto-utils';
+import { LEAKED_EXAMPLE_KEY } from '../config';
 import type { Env } from '../index';
 
 // ─── Constants ───
@@ -43,6 +44,7 @@ const STATE_MAP: Record<number, string> = {
 const PAYLOAD_EXPIRATION_TIME = 10 * 60 * 1000;
 const CALLBACK_TIMEOUT_MS = 5000;
 const REQUEST_SESSION_RETENTION_TIME = 2 * 60 * 60 * 1000;
+const MAX_CALLBACK_ATTEMPTS = 5;
 
 // ─── Interfaces ───
 
@@ -113,24 +115,40 @@ export class VerificationSession extends DurableObject<Env> {
 	 * The DO reads ENCRYPTION_KEY directly from env (it does not go through
 	 * getConfig), so it derives its own AES key with the same context string
 	 * ('avs/aes/v1') used by getConfig. Cached so the HKDF runs once per DO.
+	 *
+	 * Validates the raw key the same way getConfig does — presence, 32-byte
+	 * length, and the leaked-key blocklist — so a misconfigured DO cannot
+	 * silently derive a predictable key from the string "undefined".
 	 */
 	private async getAesKey(): Promise<Uint8Array> {
 		if (!this._aesKeyPromise) {
-			this._aesKeyPromise = hkdfDerive(this.env.ENCRYPTION_KEY, 'avs/aes/v1', 32);
+			const raw = this.env.ENCRYPTION_KEY;
+			if (!raw) {
+				throw new Error('ENCRYPTION_KEY is not set in the DO environment');
+			}
+			const keyBytes = new TextEncoder().encode(raw);
+			if (keyBytes.byteLength !== 32) {
+				throw new Error(`DO ENCRYPTION_KEY must be exactly 32 bytes (got ${keyBytes.byteLength})`);
+			}
+			if (raw === LEAKED_EXAMPLE_KEY) {
+				throw new Error('DO ENCRYPTION_KEY matches the known leaked example key');
+			}
+			this._aesKeyPromise = hkdfDerive(raw, 'avs/aes/v1', 32);
 		}
 		return this._aesKeyPromise;
 	}
 
-	private ensureInitialized(): void {
-		if (this.initialized) return;
-		this.ctx.storage.sql.exec(`
+		private ensureInitialized(): void {
+			if (this.initialized) return;
+			this.ctx.storage.sql.exec(`
 			CREATE TABLE IF NOT EXISTS sessions (
 				sessionId TEXT PRIMARY KEY,
 				payloadHash TEXT,
 				stateInt INTEGER DEFAULT 1,
 				data TEXT NOT NULL,
 				createdAt INTEGER NOT NULL,
-				callbackStatus TEXT DEFAULT 'pending'
+				callbackStatus TEXT DEFAULT 'pending',
+				callbackAttempts INTEGER DEFAULT 0
 			);
 			CREATE TABLE IF NOT EXISTS payloads (
 				payloadHash TEXT PRIMARY KEY,
@@ -155,11 +173,16 @@ export class VerificationSession extends DurableObject<Env> {
 				CREATE INDEX IF NOT EXISTS idx_request_sessions_createdAt
 					ON request_sessions (createdAt);
 			`);
-			// Migration: add callbackStatus column for pre-existing DO instances
-			// whose sessions table predates this field. Wrapped in try/catch
-			// because the column already exists on a fresh DO (created above).
+			// Migration: add columns for pre-existing DO instances whose
+			// sessions table predates these fields. Wrapped in try/catch
+			// because the columns already exist on a fresh DO (created above).
 			try {
 				this.ctx.storage.sql.exec(`ALTER TABLE sessions ADD COLUMN callbackStatus TEXT DEFAULT 'pending'`);
+			} catch {
+				// Column already exists — nothing to do.
+			}
+			try {
+				this.ctx.storage.sql.exec(`ALTER TABLE sessions ADD COLUMN callbackAttempts INTEGER DEFAULT 0`);
 			} catch {
 				// Column already exists — nothing to do.
 			}
@@ -220,7 +243,7 @@ export class VerificationSession extends DurableObject<Env> {
 				}
 				case 'storeRequestSession': {
 					const body = await request.json() as { sessionId: string; data: Record<string, any> };
-					this.storeRequestSession(body.sessionId, body.data);
+					await this.storeRequestSession(body.sessionId, body.data);
 					return Response.json({ success: true });
 				}
 				case 'getRequestSession': {
@@ -327,6 +350,12 @@ export class VerificationSession extends DurableObject<Env> {
 		// Return the existing result payload (re-encrypted) instead.
 		if (sessionData.stateInt === SESSION_STATE_SUCCESS || sessionData.stateInt === SESSION_STATE_FAILED) {
 			const decryptedPayload = await AvsEncryption.decryptString(sessionData.payload, aesKey);
+			// Match the normal end path: update userData and strip PII.
+			decryptedPayload.userData      = sessionData.userData;
+			decryptedPayload.callbackUrl   = '';
+			decryptedPayload.userIpStr     = '';
+			decryptedPayload.userIpCountry = '';
+			decryptedPayload.userIpState   = '';
 			decryptedPayload.verificationResult = {
 				state:     STATE_MAP[sessionData.stateInt],
 				stateInt:  sessionData.stateInt,
@@ -334,6 +363,14 @@ export class VerificationSession extends DurableObject<Env> {
 				errorCode: sessionData.errorCode || 0,
 			};
 			return { payload: await AvsEncryption.encryptObject(decryptedPayload, aesKey) };
+		}
+
+		// Non-eligible state guard: a session in LINK_EXPIRED or
+		// LINK_ALREADY_USED must not be transitioned to SUCCESS/FAILED.
+		// Only an IN_PROGRESS session can be ended. This prevents expired or
+		// reused links from being completed.
+		if (sessionData.stateInt !== SESSION_STATE_IN_PROGRESS) {
+			return null;
 		}
 
 		sessionData.stateInt        = sessionStateInt;
@@ -345,7 +382,34 @@ export class VerificationSession extends DurableObject<Env> {
 		sessionData.errorCode       = errorCode;
 		sessionData.callbackStatus  = 'pending';
 
-		// Dispatch callback in background so user-facing completion is not blocked.
+		// Persist the terminal state to SQLite BEFORE scheduling the callback
+		// dispatch. If the DO is evicted between the waitUntil dispatch and the
+		// SQL write, the terminal state would be lost — /result/isSuccess would
+		// report false forever for a verification the user saw succeed.
+		// Use UPDATE (not INSERT OR REPLACE) to preserve createdAt and
+		// callbackAttempts from the existing row. The row provably exists
+		// because getById returned it above and the terminal-state guard
+		// guarantees it hasn't been deleted.
+		this.ctx.storage.sql.exec(
+			`UPDATE sessions SET payloadHash = ?, stateInt = ?, data = ?, callbackStatus = ? WHERE sessionId = ?`,
+			sessionData.payload ? await AvsEncryption.computePayloadHash(sessionData.payload) : null,
+			sessionStateInt,
+			JSON.stringify(sessionData),
+			'pending',
+			sessionId
+		);
+
+		// Audit log
+		this.ctx.storage.sql.exec(
+			`INSERT INTO audit_log (sessionId, event, detail, timestamp) VALUES (?, ?, ?, ?)`,
+			sessionId,
+			'session_ended',
+			JSON.stringify({ state: STATE_MAP[sessionStateInt], errorCode }),
+			Date.now()
+		);
+
+		// Dispatch callback in background so user-facing completion is not
+		// blocked. Runs only after the terminal state is durably persisted.
 		if (sessionData.callbackUrl) {
 			this.ctx.waitUntil(
 				this.dispatchCallback(sessionData, sessionStateInt, sessionId, errorCode, stepIp, idCountry, idState, idType)
@@ -358,30 +422,16 @@ export class VerificationSession extends DurableObject<Env> {
 			}
 		}
 
-		// Update session in SQLite
-		this.ctx.storage.sql.exec(
-			`INSERT OR REPLACE INTO sessions (sessionId, payloadHash, stateInt, data, createdAt, callbackStatus) VALUES (?, ?, ?, ?, ?, ?)`,
-			sessionId,
-			sessionData.payload ? await AvsEncryption.computePayloadHash(sessionData.payload) : null,
-			sessionStateInt,
-			JSON.stringify(sessionData),
-			Date.now(),
-			'pending'
-		);
-
-		// Audit log
-		this.ctx.storage.sql.exec(
-			`INSERT INTO audit_log (sessionId, event, detail, timestamp) VALUES (?, ?, ?, ?)`,
-			sessionId,
-			'session_ended',
-			JSON.stringify({ state: STATE_MAP[sessionStateInt], errorCode }),
-			Date.now()
-		);
-
 		// Build result payload (same format as original)
 		const decryptedPayload = await AvsEncryption.decryptString(sessionData.payload, aesKey);
 		decryptedPayload.userData           = sessionData.userData;
+		// Strip PII from the result payload. This value is stored in the
+		// isAgeVerified cookie on the client browser and returned to the
+		// partner — it must not contain the user's IP address or geo data.
 		decryptedPayload.callbackUrl        = '';
+		decryptedPayload.userIpStr          = '';
+		decryptedPayload.userIpCountry      = '';
+		decryptedPayload.userIpState        = '';
 		decryptedPayload.verificationResult = {
 			state:     STATE_MAP[sessionStateInt],
 			stateInt:  sessionStateInt,
@@ -400,19 +450,28 @@ export class VerificationSession extends DurableObject<Env> {
 		const sessionData = this.getById(sessionId);
 		if (!sessionData) return false;
 
+		// Terminal-state guard: do not mutate a session that has already
+		// reached SUCCESS or FAILED. Overwriting a terminal row would
+		// corrupt the audit/billing data and reset callbackStatus to the
+		// schema default ('pending'), triggering duplicate partner callbacks.
+		if (sessionData.stateInt === SESSION_STATE_SUCCESS || sessionData.stateInt === SESSION_STATE_FAILED) {
+			return false;
+		}
+
 		sessionData.stepIp    = stateData.stepId;
 		sessionData.idCountry = stateData.idCountry;
 		sessionData.idState   = stateData.idState;
 		sessionData.idType    = stateData.idType;
 		sessionData.errorCode = stateData.errorCode;
 
+		// Use UPDATE (not INSERT OR REPLACE) so we preserve the callbackStatus
+		// column and createdAt from the existing row.
 		this.ctx.storage.sql.exec(
-			`INSERT OR REPLACE INTO sessions (sessionId, payloadHash, stateInt, data, createdAt) VALUES (?, ?, ?, ?, ?)`,
-			sessionId,
+			`UPDATE sessions SET payloadHash = ?, stateInt = ?, data = ? WHERE sessionId = ?`,
 			sessionData.payload ? await AvsEncryption.computePayloadHash(sessionData.payload) : null,
 			sessionData.stateInt || SESSION_STATE_IN_PROGRESS,
 			JSON.stringify(sessionData),
-			Date.now()
+			sessionId
 		);
 
 		return true;
@@ -443,7 +502,12 @@ export class VerificationSession extends DurableObject<Env> {
 		);
 
 		for (const row of cursor) {
-			return JSON.parse(row.data as string);
+			try {
+				return JSON.parse(row.data as string);
+			} catch (e) {
+				console.error('Corrupt session row for', sessionId, e);
+				return null;
+			}
 		}
 		return null;
 	}
@@ -451,6 +515,7 @@ export class VerificationSession extends DurableObject<Env> {
 	// ─── Payload Methods ───
 
 	private storePayload(payloadHash: string, payload: string, creationTimestamp: number): void {
+		this.ensureInitialized();
 		const cursor = this.ctx.storage.sql.exec(
 			`SELECT payloadHash FROM payloads WHERE payloadHash = ?`,
 			payloadHash
@@ -468,6 +533,7 @@ export class VerificationSession extends DurableObject<Env> {
 	}
 
 	private isPayloadStored(payloadHash: string): boolean {
+		this.ensureInitialized();
 		const cursor = this.ctx.storage.sql.exec(
 			`SELECT payloadHash FROM payloads WHERE payloadHash = ?`,
 			payloadHash
@@ -480,7 +546,7 @@ export class VerificationSession extends DurableObject<Env> {
 
 	// ─── Request Session (per-request data like successKey/failKey) ───
 
-	private storeRequestSession(sessionId: string, data: Record<string, any>): void {
+	private async storeRequestSession(sessionId: string, data: Record<string, any>): Promise<void> {
 		this.ensureInitialized();
 
 		this.ctx.storage.sql.exec(
@@ -505,7 +571,12 @@ export class VerificationSession extends DurableObject<Env> {
 			sessionId
 		);
 		for (const row of cursor) {
-			return JSON.parse(row.data as string);
+			try {
+				return JSON.parse(row.data as string);
+			} catch (e) {
+				console.error('Corrupt request_session row for', sessionId, e);
+				return null;
+			}
 		}
 		return null;
 	}
@@ -567,7 +638,9 @@ export class VerificationSession extends DurableObject<Env> {
 	/**
 	 * Update the callbackStatus on a session row — both in the indexed
 	 * `callbackStatus` column (for the alarm scan) and inside the `data`
-	 * JSON blob (so getById round-trips it). No-op if the session is gone.
+	 * JSON blob (so getById round-trips it). Increments callbackAttempts on
+	 * every call so the alarm handler can cap retries. No-op if the session
+	 * is gone.
 	 */
 	private updateCallbackStatus(sessionId: string, status: 'pending' | 'sent' | 'failed'): void {
 		this.ensureInitialized();
@@ -575,7 +648,7 @@ export class VerificationSession extends DurableObject<Env> {
 		if (!sessionData) return;
 		sessionData.callbackStatus = status;
 		this.ctx.storage.sql.exec(
-			`UPDATE sessions SET data = ?, callbackStatus = ? WHERE sessionId = ?`,
+			`UPDATE sessions SET data = ?, callbackStatus = ?, callbackAttempts = callbackAttempts + 1 WHERE sessionId = ?`,
 			JSON.stringify(sessionData),
 			status,
 			sessionId
@@ -586,20 +659,35 @@ export class VerificationSession extends DurableObject<Env> {
 	 * Alarm handler — used as a fallback to retry callbacks that never
 	 * reached 'sent' (e.g. the waitUntil task was evicted, or the partner
 	 * endpoint was temporarily unavailable). Scheduled 60s after endSession.
-	 * Idempotent: dispatchCallback re-marks the status on each attempt.
+	 *
+	 * Retries are capped at MAX_CALLBACK_ATTEMPTS per session. If any
+	 * retryable session remains after this firing, the alarm is re-armed
+	 * so callbacks are not abandoned after a single retry.
 	 */
 	async alarm(): Promise<void> {
 		this.ensureInitialized();
+		let needRearm = false;
 		const cursor = this.ctx.storage.sql.exec(
-			`SELECT sessionId, data FROM sessions WHERE callbackStatus IN ('failed', 'pending')`
+			`SELECT sessionId, data, callbackAttempts FROM sessions WHERE callbackStatus IN ('failed', 'pending')`
 		);
 		for (const row of cursor) {
-			const sessionData = JSON.parse(row.data as string) as SessionData;
+			const attempts = (row.callbackAttempts as number) || 0;
+			if (attempts >= MAX_CALLBACK_ATTEMPTS) continue;
+
+			let sessionData: SessionData;
+			try {
+				sessionData = JSON.parse(row.data as string) as SessionData;
+			} catch (e) {
+				// Skip corrupt rows so one bad row doesn't abort the sweep.
+				console.error('Corrupt session row in alarm sweep', row.sessionId, e);
+				continue;
+			}
 			// Only retry terminal sessions (success/fail) that have a callback URL.
 			if (
 				sessionData.callbackUrl &&
 				(sessionData.stateInt === SESSION_STATE_SUCCESS || sessionData.stateInt === SESSION_STATE_FAILED)
 			) {
+				needRearm = true;
 				await this.dispatchCallback(
 					sessionData,
 					sessionData.stateInt,
@@ -610,6 +698,17 @@ export class VerificationSession extends DurableObject<Env> {
 					sessionData.idState || '',
 					sessionData.idType || ''
 				);
+			}
+		}
+
+		// Re-arm the alarm if there are still sessions that may need another
+		// retry (they are below the attempt cap and their callback may fail
+		// again on this attempt).
+		if (needRearm) {
+			try {
+				this.ctx.storage.setAlarm(Date.now() + 60_000);
+			} catch (err) {
+				console.error('Failed to re-schedule callback retry alarm', err);
 			}
 		}
 	}

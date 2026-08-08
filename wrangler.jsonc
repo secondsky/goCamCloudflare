@@ -36,6 +36,7 @@
 
 	// Static assets
 	"assets": {
-		"directory": "./app/frontend"
+		"directory": "./app/frontend",
+		"binding": "ASSETS"
 	}
 }

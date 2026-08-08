@@ -11,7 +11,7 @@ import { getDoStub, createSessionCookie, withCookie, parseCookies } from '../mid
 import { renderTokenIndex } from '../templates/token-index';
 import { renderTokenEmbedCheck } from '../templates/token-embed-check';
 import { renderTokenError } from '../templates/token-error';
-import { VERIFICATION_STANDARD_V1, VERIFICATION_IFRAME_V1 } from '../durable-objects/verification-session';
+import { VERIFICATION_STANDARD_V1, VERIFICATION_IFRAME_V1, SESSION_STATE_IN_PROGRESS } from '../durable-objects/verification-session';
 import UAParser from 'ua-parser-js';
 
 interface DoStartResponse {
@@ -83,7 +83,10 @@ async function renderTokenPage(
 		const startResult = await callDoJson<any>(stub, 'start', {
 				payload,
 		});
-		if (startResult && typeof startResult.sessionId === 'string') {
+		// Only render the verification page for sessions that are still
+		// IN_PROGRESS. Expired or already-used links (LINK_EXPIRED,
+		// LINK_ALREADY_USED) must not produce a verifiable session.
+		if (startResult && typeof startResult.sessionId === 'string' && startResult.sessionState === SESSION_STATE_IN_PROGRESS) {
 			avsSession = {
 				sessionId: startResult.sessionId,
 				linkBack: typeof startResult.linkBack === 'string' ? startResult.linkBack : '/',
