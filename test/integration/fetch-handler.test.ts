@@ -50,6 +50,33 @@ describe('Worker fetch handler — routing', () => {
 	});
 });
 
+describe('Worker fetch handler — HEAD requests', () => {
+	// HEAD must return the same status/headers as GET but with no body.
+	// Before the fix, HEAD fell through route handlers (which only match GET)
+	// and returned 404. See BUG-06 in docs/qa/test-report.md.
+	it('HEAD / returns 200 with the same content-type as GET', async () => {
+		const getResponse = await SELF.fetch('https://example.com/');
+		const headResponse = await SELF.fetch('https://example.com/', { method: 'HEAD' });
+		expect(headResponse.status).toBe(200);
+		expect(headResponse.headers.get('content-type')).toBe(getResponse.headers.get('content-type'));
+	});
+
+	it('HEAD /test returns 200', async () => {
+		const response = await SELF.fetch('https://example.com/test', { method: 'HEAD' });
+		expect(response.status).toBe(200);
+	});
+
+	it('HEAD /terms returns 200', async () => {
+		const response = await SELF.fetch('https://example.com/terms', { method: 'HEAD' });
+		expect(response.status).toBe(200);
+	});
+
+	it('HEAD /token returns 200', async () => {
+		const response = await SELF.fetch('https://example.com/token', { method: 'HEAD' });
+		expect(response.status).toBe(200);
+	});
+});
+
 describe('Worker fetch handler — POST /getVerificationPayloadAndUrl error handling', () => {
 	it('rejects a request with missing required fields', async () => {
 		// Empty body: no callbackUrl / demoPageUrl / color config fields.

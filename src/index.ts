@@ -72,8 +72,20 @@ export default {
 		const url = new URL(request.url);
 		const { pathname } = url;
 
+		// HEAD requests: route handlers match on GET, so a raw HEAD falls through
+		// to the asset fetcher and returns 404 for Worker-served pages. Per HTTP
+		// semantics (RFC 7231 §4.3.2), a HEAD response must have the same headers
+		// as GET but no body. We satisfy this by routing HEAD as GET and stripping
+		// the body from the final response.
+		const isHead = request.method === 'HEAD';
+		if (isHead) {
+			request = new Request(request, { method: 'GET' });
+		}
+
 		// Set security headers on all responses (including early returns)
 		const addSecurityHeaders = (response: Response): Response => {
+			// For HEAD responses, drop the body (HTTP requires HEAD to have none).
+			const body = isHead ? null : response.body;
 			const newHeaders = new Headers(response.headers);
 			newHeaders.set(
 				'Permissions-Policy',
@@ -95,7 +107,7 @@ export default {
 				newHeaders.set('Access-Control-Allow-Origin', allowedOrigin);
 				newHeaders.set('Vary', 'Origin');
 			}
-			return new Response(response.body, {
+			return new Response(body, {
 				status: response.status,
 				statusText: response.statusText,
 				headers: newHeaders,

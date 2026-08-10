@@ -1,23 +1,64 @@
 # QA Test Report — GO.cam Age Verification (Cloudflare Workers)
 
-**Date:** 2026-08-08
+**Date:** 2026-08-08 (round 1); 2026-08-10 (round 2 re-test)
 **Scope:** Every feature in the app, tested end-to-end via HTTP (curl) and browser (Chrome DevTools).
 
 ## Summary
 
-| Metric | Count |
-|--------|-------|
-| User stories defined | 36 |
-| Passed (HTTP/API) | 26 |
-| Passed (unit/integration tests) | 6 |
-| Skipped (require webcam) | 4 |
-| Failed | 0 |
-| Bugs found | 5 |
-| Bugs fixed | 5 |
+| Metric | Round 1 (2026-08-08) | Round 2 (2026-08-10) |
+|--------|----------------------|----------------------|
+| User stories defined | 36 | 36 |
+| Passed (HTTP/API) | 26 | 26 |
+| Passed (unit/integration tests) | 6 | 6 (131 tests, 17 files) |
+| Skipped (require webcam) | 4 | 4 |
+| Failed | 0 | 0 |
+| Bugs found | 5 | 1 |
+| Bugs fixed | 5 | 1 |
 
-All 36 user stories pass. 4 were skipped because they require a physical webcam
-(selfie detection, scan-ID detection, iframe verification start, iframe event
-logging) — these cannot be tested in a headless environment.
+All 36 user stories pass in both rounds. 4 stories are skipped because they
+require a physical webcam (selfie detection, scan-ID detection, iframe
+verification start, iframe event logging) — these cannot be tested in a
+headless environment.
+
+All 36 user stories pass in both rounds. 4 were skipped because they require a
+physical webcam (selfie detection, scan-ID detection, iframe verification start,
+iframe event logging) — these cannot be tested in a headless environment.
+
+## Round 2 Bug Found (2026-08-10)
+
+### BUG-06 (Medium): HEAD requests return 404 on all Worker GET routes
+
+**What:** The route handlers in `src/routes/index.ts`, `src/routes/token.ts`,
+and `src/routes/result.ts` match requests by exact method (`=== 'GET'` or
+`=== 'POST'`). A HEAD request did not match any handler, so it fell through
+to the static-asset fallback, which returned 404.
+
+**User-visible result:** Any client sending a HEAD request to `/`, `/test`,
+`/terms`, or `/token` received a 404. This affects:
+
+- Browser link preflight and prefetching (Chrome sends HEAD for some preconnects).
+- Monitoring and uptime checkers (many send HEAD to verify a page is alive).
+- SEO crawlers that probe with HEAD before GET.
+- API clients that check resource existence with HEAD.
+
+**Root cause:** Cloudflare Workers does not automatically route HEAD to GET
+handlers. The Workers runtime delivers the request to `fetch()` with
+`request.method === 'HEAD'`, and the developer must handle it.
+
+**Fix:** At the top of the fetch handler in `src/index.ts`, detect HEAD
+requests and rewrite the method to GET for routing. The `addSecurityHeaders`
+wrapper strips the response body (sets it to `null`) when the original method
+was HEAD, satisfying the HTTP requirement (RFC 7231 §4.3.2) that HEAD returns
+the same headers as GET but no body.
+
+**Verified:** HEAD requests to `/`, `/test`, `/terms`, `/terms/`, and `/token`
+all return HTTP 200 with correct `Content-Type` and all security headers. The
+response body is 0 bytes. GET requests are unchanged. Four new integration
+tests in `test/integration/fetch-handler.test.ts` lock in this behavior.
+
+**Test suite:** 131 tests pass (127 original + 4 new HEAD tests).
+
+
 
 ## Bugs Found and Fixed
 
@@ -92,20 +133,27 @@ behavior still works when JS is available.
 
 ## Files Changed
 
-| File | Change |
-|------|--------|
-| `.dev.vars` | Replaced leaked key with valid key; fixed algorithm to `aes-256-gcm` |
-| `.env.example` | Fixed `ENCRYPTION_ALGORITHM` from `aes-256-cbc` to `aes-256-gcm` |
-| `wrangler.jsonc` | Added `"run_worker_first": true` to assets config |
-| `src/templates/base.ts` | Added `<link rel="icon">` favicon reference |
-| `src/index.ts` | Added `/terms` and `/terms/` to index route dispatch |
-| `src/routes/index.ts` | Added GET `/terms` handler serving standalone terms page |
+| File | Round | Change |
+|------|-------|--------|
+| `.dev.vars` | 1 | Replaced leaked key with valid key; fixed algorithm to `aes-256-gcm` |
+| `.env.example` | 1 | Fixed `ENCRYPTION_ALGORITHM` from `aes-256-cbc` to `aes-256-gcm` |
+| `wrangler.jsonc` | 1 | Added `"run_worker_first": true` to assets config |
+| `src/templates/base.ts` | 1 | Added `<link rel="icon">` favicon reference |
+| `src/index.ts` | 1 | Added `/terms` and `/terms/` to index route dispatch |
+| `src/routes/index.ts` | 1 | Added GET `/terms` handler serving standalone terms page |
+| `src/index.ts` | 2 | HEAD requests now route as GET + body stripped (BUG-06 fix) |
+| `test/integration/fetch-handler.test.ts` | 2 | Added 4 HEAD request integration tests |
+| `docs/qa/features-spreadsheet.csv` | 2 | Added Round 2 Re-test column |
+| `docs/qa/test-report.md` | 2 | Added round 2 section and BUG-06 |
 
 ## Test Suite
 
-All 127 existing tests pass after the changes:
+All 131 tests pass after the round 2 changes:
 
 ```
 Test Files  17 passed (17)
-     Tests  127 passed (127)
+     Tests  131 passed (131)
 ```
+
+TypeScript compiles clean (`tsc --noEmit` exits 0).
+
