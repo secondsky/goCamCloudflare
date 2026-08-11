@@ -7,6 +7,7 @@ import type { Env } from '../index';
 import { getConfig } from '../config';
 import { AvsEncryption } from '../lib/encryption';
 import { isSafeCallbackUrl } from '../lib/url';
+import { isValidHexColor } from '../lib/color';
 import { AvsResponse } from '../lib/response';
 import { renderHome } from '../templates/home';
 import { VERIFICATION_IFRAME_V1, SESSION_STATE_SUCCESS } from '../durable-objects/verification-session';
@@ -92,6 +93,28 @@ export async function handleIndexRoutes(request: Request, env: Env, url: URL): P
 			callbackUrl == undefined
 		) {
 			return Response.json(AvsResponse.errorResponse(30000, 'Invalid payload config'));
+		}
+
+		// Color format validation (XSS defense, layer 1): each of the 5 color
+		// fields must be a valid 3- or 6-digit hex color. This prevents partners
+		// from injecting e.g. `javascript:alert(1)` as a "color", which would
+		// otherwise flow through the encrypted payload into the token page
+		// template. Render-time sanitization in src/routes/token.ts is layer 2.
+		// Note: values are accepted as-is (no canonicalization); invalid input
+		// is simply rejected with a per-field error.
+		const colorFields = [
+			['colorConfigBodyBackgroundInput',      colorConfigBodyBackgroundInput],
+			['colorConfigBodyForegroundInput',      colorConfigBodyForegroundInput],
+			['colorConfigButtonBackgroundInput',    colorConfigButtonBackgroundInput],
+			['colorConfigButtonForegroundInput',    colorConfigButtonForegroundInput],
+			['colorConfigButtonForegroundCTAInput', colorConfigButtonForegroundCTAInput],
+		] as const;
+		for (const [fieldName, fieldValue] of colorFields) {
+			if (!isValidHexColor(fieldValue)) {
+				return Response.json(
+					AvsResponse.errorResponse(30000, 'Invalid color config: ' + fieldName + ' must be a 6-digit hex color (e.g. #ffffff)')
+				);
+			}
 		}
 
 		if (typeof callbackUrl !== 'string' || callbackUrl.trim() === '') {

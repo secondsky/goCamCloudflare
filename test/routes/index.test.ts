@@ -360,6 +360,93 @@ describe('handleIndexRoutes — POST /getVerificationPayloadAndUrl', () => {
 		expect(decrypted.callbackUrl).toBe('https://partner.example.com/cb');
 	});
 
+	describe('color format validation (XSS defense)', () => {
+		// These tests pin the input-validation layer: invalid hex is rejected
+		// at /getVerificationPayloadAndUrl submission with a per-field error
+		// BEFORE it is encrypted into the payload. The error message must
+		// name the exact offending form field so partners can fix it.
+		it('colorConfigBodyBackgroundInput = "javascript:alert(1)" → 30000 with that field name in the message', async () => {
+			const { env } = makeEnv();
+			const handleIndexRoutes = await importHandler();
+			const req = formRequest(
+				'/getVerificationPayloadAndUrl',
+				fullFormBody({ colorConfigBodyBackgroundInput: 'javascript:alert(1)' }),
+				{ cf: VALID_CF },
+			);
+			const res = await handleIndexRoutes(req as any, env, new URL('https://example.com/getVerificationPayloadAndUrl'));
+			expect(res).not.toBeNull();
+			const json = await res!.json();
+			expect(json).toEqual({
+				error: {
+					code: 30000,
+					msg: 'Invalid color config: colorConfigBodyBackgroundInput must be a 6-digit hex color (e.g. #ffffff)',
+				},
+			});
+		});
+
+		it('colorConfigButtonForegroundCTAInput = "not-a-color" → 30000 with that (different) field name', async () => {
+			// Confirms the field name in the message is dynamic per offending field.
+			const { env } = makeEnv();
+			const handleIndexRoutes = await importHandler();
+			const req = formRequest(
+				'/getVerificationPayloadAndUrl',
+				fullFormBody({ colorConfigButtonForegroundCTAInput: 'not-a-color' }),
+				{ cf: VALID_CF },
+			);
+			const res = await handleIndexRoutes(req as any, env, new URL('https://example.com/getVerificationPayloadAndUrl'));
+			expect(res).not.toBeNull();
+			const json = await res!.json();
+			expect(json).toEqual({
+				error: {
+					code: 30000,
+					msg: 'Invalid color config: colorConfigButtonForegroundCTAInput must be a 6-digit hex color (e.g. #ffffff)',
+				},
+			});
+		});
+
+		it('a 4-digit hex (#fff0) is rejected', async () => {
+			const { env } = makeEnv();
+			const handleIndexRoutes = await importHandler();
+			const req = formRequest(
+				'/getVerificationPayloadAndUrl',
+				fullFormBody({ colorConfigBodyForegroundInput: '#fff0' }),
+				{ cf: VALID_CF },
+			);
+			const res = await handleIndexRoutes(req as any, env, new URL('https://example.com/getVerificationPayloadAndUrl'));
+			expect(res).not.toBeNull();
+			const json = await res!.json();
+			expect(json).toEqual({
+				error: {
+					code: 30000,
+					msg: 'Invalid color config: colorConfigBodyForegroundInput must be a 6-digit hex color (e.g. #ffffff)',
+				},
+			});
+		});
+
+		it('3-digit hex (#fff) is accepted (SSRF fixture relies on this)', async () => {
+			// Pins that the validator does NOT break the existing
+			// fetch-handler.test.ts SSRF fixture, which uses 3-digit hex.
+			const { env } = makeEnv();
+			const handleIndexRoutes = await importHandler();
+			const req = formRequest(
+				'/getVerificationPayloadAndUrl',
+				fullFormBody({
+					colorConfigBodyBackgroundInput: '#fff',
+					colorConfigBodyForegroundInput: '#000',
+					colorConfigButtonBackgroundInput: '#00f',
+					colorConfigButtonForegroundInput: '#fff',
+					colorConfigButtonForegroundCTAInput: '#f00',
+				}),
+				{ cf: VALID_CF },
+			);
+			const res = await handleIndexRoutes(req as any, env, new URL('https://example.com/getVerificationPayloadAndUrl'));
+			expect(res).not.toBeNull();
+			const json = await res!.json();
+			expect(json.content).toBeDefined();
+			expect(json.content.success).toBe(1);
+		});
+	});
+
 	it('happy path with no demoPageUrl uses request url.origin', async () => {
 		const { env } = makeEnv();
 		const handleIndexRoutes = await importHandler();

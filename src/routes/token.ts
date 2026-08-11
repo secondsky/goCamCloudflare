@@ -7,6 +7,7 @@ import { getConfig, type AppConfig } from '../config';
 import { AvsEncryption } from '../lib/encryption';
 import { AvsRandom } from '../lib/random';
 import { callDoJson } from '../lib/do';
+import { sanitizeColorConfig } from '../lib/color';
 import { getDoStub, createSessionCookie, withCookie, parseCookies } from '../middleware/session';
 import { renderTokenIndex } from '../templates/token-index';
 import { renderTokenEmbedCheck } from '../templates/token-embed-check';
@@ -163,7 +164,7 @@ async function renderTokenPage(
 			verificationVersion:   verificationVersion,
 			d:                     payload,
 			sessionId:             sessionId,
-			partnerColorConfig:    payloadParsed.userData?.colorConfig || {},
+			partnerColorConfig:    sanitizeColorConfig(payloadParsed.userData?.colorConfig),
 			ipCountry:             ipCountry,
 			deviceInfo:            userAgent,
 			countryAgeMajority:    config.countryAgeMajority,
