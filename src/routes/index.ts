@@ -112,7 +112,7 @@ export async function handleIndexRoutes(request: Request, env: Env, url: URL): P
 		for (const [fieldName, fieldValue] of colorFields) {
 			if (!isValidHexColor(fieldValue)) {
 				return Response.json(
-					AvsResponse.errorResponse(30000, 'Invalid color config: ' + fieldName + ' must be a 6-digit hex color (e.g. #ffffff)')
+					AvsResponse.errorResponse(30000, 'Invalid color config: ' + fieldName + ' must be a 3- or 6-digit hex color (e.g. #ffffff)')
 				);
 			}
 		}

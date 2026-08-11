@@ -379,7 +379,7 @@ describe('handleIndexRoutes — POST /getVerificationPayloadAndUrl', () => {
 			expect(json).toEqual({
 				error: {
 					code: 30000,
-					msg: 'Invalid color config: colorConfigBodyBackgroundInput must be a 6-digit hex color (e.g. #ffffff)',
+					msg: 'Invalid color config: colorConfigBodyBackgroundInput must be a 3- or 6-digit hex color (e.g. #ffffff)',
 				},
 			});
 		});
@@ -399,7 +399,7 @@ describe('handleIndexRoutes — POST /getVerificationPayloadAndUrl', () => {
 			expect(json).toEqual({
 				error: {
 					code: 30000,
-					msg: 'Invalid color config: colorConfigButtonForegroundCTAInput must be a 6-digit hex color (e.g. #ffffff)',
+					msg: 'Invalid color config: colorConfigButtonForegroundCTAInput must be a 3- or 6-digit hex color (e.g. #ffffff)',
 				},
 			});
 		});
@@ -418,7 +418,7 @@ describe('handleIndexRoutes — POST /getVerificationPayloadAndUrl', () => {
 			expect(json).toEqual({
 				error: {
 					code: 30000,
-					msg: 'Invalid color config: colorConfigBodyForegroundInput must be a 6-digit hex color (e.g. #ffffff)',
+					msg: 'Invalid color config: colorConfigBodyForegroundInput must be a 3- or 6-digit hex color (e.g. #ffffff)',
 				},
 			});
 		});
