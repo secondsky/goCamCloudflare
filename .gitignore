@@ -62,6 +62,9 @@ typings/
 .dev.vars
 .dev.vars.*
 
+# Wrangler local state/build cache
+.wrangler/
+
 tmp/
 .DS_Store
 
