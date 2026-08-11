@@ -1,5 +1,5 @@
 /**
- * Token error page — replaces token/error.twig
+ * Token error page (rendered as a string; no template engine)
  */
 import { renderBase } from './base';
 

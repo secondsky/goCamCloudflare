@@ -1,5 +1,5 @@
 /**
- * Iframe embed check page — replaces token/embedCheck.twig
+ * Iframe embed check page (rendered as a string; no template engine)
  */
 
 export interface EmbedCheckOptions {

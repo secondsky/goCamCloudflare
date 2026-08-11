@@ -1,7 +1,5 @@
 /**
- * Home page template — replaces home/index.twig.
- * The HTML content is the exact same as the original Twig template,
- * with Twig syntax replaced by JS template interpolation.
+ * Home page template (rendered as a string; no template engine).
  */
 import { renderBase } from './base';
 

@@ -1,5 +1,5 @@
 /**
- * Index routes — replaces source/backend/app/route/index.ts
+ * Index routes
  * Handles: GET /, POST /getVerificationPayloadAndUrl,
  *          POST /validateVerificationPayload, POST /callback, GET /test
  */

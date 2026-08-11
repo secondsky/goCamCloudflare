@@ -1,5 +1,5 @@
 /**
- * Base HTML template — replaces base.twig.
+ * Base HTML template (rendered as a string; no template engine).
  * Produces the <!DOCTYPE>, <head>, and <body> skeleton.
  */
 

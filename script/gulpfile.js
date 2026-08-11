@@ -5,11 +5,12 @@ const sass   = require('gulp-sass')(require('sass'));
 const ts     = require('gulp-typescript');
 const fs     = require('node:fs');
 
-const backendTsConfigLocation  = './../source/backend/tsconfig.json';
-const frontendTsConfigLocation = './../source/frontend/js/tsconfig.json';
+// NOTE: the original Node.js/Express backend has been removed. This gulpfile
+// now only builds the frontend assets (TS -> bundled JS, SCSS -> CSS) that the
+// Cloudflare Worker serves from app/frontend/static/. The npm scripts
+// "build:frontend" and "build:css" invoke these tasks.
 
-const backendJsSourceLocation      = './../source/backend/app/**/**/*.ts';
-const backendJsDestinationLocation = '../app/backend/';
+const frontendTsConfigLocation = './../source/frontend/js/tsconfig.json';
 
 const frontendJsSourceLocation      = './../source/frontend/js/app/**/**/**/*.ts';
 const frontendJsDestinationLocation = './tmp/';
@@ -18,7 +19,6 @@ const frontendJsConcatLocation      = '../app/frontend/static/js/app/';
 const frontendCssSourceLocation      = './../source/frontend/css/**/**/*.scss';
 const frontendCssDestinationLocation = '../app/frontend/static/css/';
 
-const tsBackendProject  = ts.createProject(backendTsConfigLocation);
 const tsFrontendProject = ts.createProject(frontendTsConfigLocation);
 
 /**
@@ -38,27 +38,21 @@ function cleanTempLocation(cb) {
 	cb();
 }
 
-function buildJsBackend() {
-	const tsResult = gulp.src(backendJsSourceLocation).pipe(tsBackendProject());
-
-	return tsResult.js.pipe(gulp.dest(backendJsDestinationLocation));
-}
-
 function buildJsFrontend(cb) {
 
 	const tsResult = gulp.src(frontendJsSourceLocation).pipe(tsFrontendProject());
 	tsResult.js
-	.pipe(gulp.dest(frontendJsDestinationLocation))
-	.on('end', () => {
-		// on stream end, gather the files and move them to the frontend destination directory
-		const folderToConcatList = fs.readdirSync(frontendJsDestinationLocation);
-		for (let i = 0, j = folderToConcatList.length; i < j; i++) {
-			gulp.src([frontendJsDestinationLocation + folderToConcatList[i] + '/**/**/*.js'])
-				.pipe(concat(folderToConcatList[i]))
-				.pipe(gulp.dest(frontendJsConcatLocation))
-		}
-		cb();
-	});
+		.pipe(gulp.dest(frontendJsDestinationLocation))
+		.on('end', () => {
+			// on stream end, gather the files and move them to the frontend destination directory
+			const folderToConcatList = fs.readdirSync(frontendJsDestinationLocation);
+			for (let i = 0, j = folderToConcatList.length; i < j; i++) {
+				gulp.src([frontendJsDestinationLocation + folderToConcatList[i] + '/**/**/*.js'])
+					.pipe(concat(folderToConcatList[i]))
+					.pipe(gulp.dest(frontendJsConcatLocation))
+			}
+			cb();
+		});
 }
 
 function cleanJsFrontend(cb) {
@@ -77,10 +71,6 @@ function buildCssFrontend() {
 		.pipe(gulp.dest(frontendCssDestinationLocation));
 }
 
-function watchJsBackend(cb) {
-	gulp.watch(backendJsSourceLocation, buildJsBackend);
-}
-
 function watchJsFrontend(cb) {
 	gulp.watch(frontendJsSourceLocation, buildJsFrontend);
 }
@@ -90,14 +80,12 @@ function watchCssFrontend(cb) {
 }
 
 
-exports.build            = gulp.series(cleanTempLocation, buildJsBackend, buildJsFrontend, buildCssFrontend);
-exports.buildJsBackend   = buildJsBackend;
+exports.build            = gulp.series(cleanTempLocation, buildJsFrontend, buildCssFrontend);
 exports.buildJsFrontend  = buildJsFrontend;
 exports.cleanJsFrontend  = cleanJsFrontend;
 exports.buildCssFrontend = buildCssFrontend
 
-exports.watch            = gulp.parallel(watchJsBackend, watchJsFrontend, watchCssFrontend);
-exports.watchJsBackend   = watchJsBackend;
+exports.watch            = gulp.parallel(watchJsFrontend, watchCssFrontend);
 exports.watchJsFrontend  = watchJsFrontend;
 exports.watchCssFrontend = watchCssFrontend;
 

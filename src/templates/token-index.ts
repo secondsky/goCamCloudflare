@@ -1,5 +1,5 @@
 /**
- * Token verification page — replaces token/index.twig.
+ * Token verification page (rendered as a string; no template engine).
  * This is the main age verification UI with webcam, selfie, scan ID sections.
  */
 import { renderBase } from './base';

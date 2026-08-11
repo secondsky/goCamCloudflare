@@ -1,5 +1,5 @@
 /**
- * Result routes — replaces source/backend/app/route/result.ts
+ * Result routes
  * Handles: POST /result/success, POST /result/fail, POST /result/isSuccess
  */
 import type { Env } from '../index';

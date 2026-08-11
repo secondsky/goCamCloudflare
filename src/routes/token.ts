@@ -1,5 +1,5 @@
 /**
- * Token routes — replaces source/backend/app/route/token.ts
+ * Token routes
  * Handles: GET /token, GET /token/iframeRender, GET /token/iframeCheck
  */
 import type { Env } from '../index';
