@@ -103,3 +103,131 @@ describe('Worker fetch handler — static assets', () => {
 		expect(response.status).toBeLessThan(500);
 	});
 });
+
+/**
+ * Rate-limit tests for checkRateLimit (module-private, exercised via SELF.fetch).
+ *
+ * The rateLimitMap is per-isolate and persists across tests in the same
+ * workers-pool run, so each test MUST use a unique IP. We use a module-scoped
+ * counter that yields a documentation-reserved IP (RFC 5737, 198.51.100.0/24)
+ * per test so no two tests share a bucket.
+ *
+ * The window is 60s / 30 POSTs. Only POST requests are rate-limited.
+ */
+describe('Worker fetch handler — rate limiting', () => {
+	// Unique-per-test IP counter (198.51.100.N — RFC 5737 doc-reserved range).
+	// Start at .10 to leave room for any ad-hoc addresses used elsewhere.
+	let ipCounter = 10;
+	const uniqueIp = () => `198.51.100.${ipCounter++}`;
+
+	it('allows 30 POSTs from a single IP within the window', async () => {
+		const ip = uniqueIp();
+		for (let i = 0; i < 30; i++) {
+			const response = await SELF.fetch('https://example.com/callback', {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					'CF-Connecting-IP': ip,
+				},
+				body: JSON.stringify({}),
+			});
+			expect(response.status).not.toBe(429);
+		}
+	});
+
+	it('returns 429 with {error:"rate_limited"} and Retry-After:60 on the 31st POST', async () => {
+		const ip = uniqueIp();
+		// Exhaust the 30-request window.
+		for (let i = 0; i < 30; i++) {
+			await SELF.fetch('https://example.com/callback', {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					'CF-Connecting-IP': ip,
+				},
+				body: JSON.stringify({}),
+			});
+		}
+		// 31st POST must be rejected.
+		const response = await SELF.fetch('https://example.com/callback', {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+				'CF-Connecting-IP': ip,
+			},
+			body: JSON.stringify({}),
+		});
+		expect(response.status).toBe(429);
+		expect(response.headers.get('retry-after')).toBe('60');
+		const body = await response.json() as any;
+		expect(body).toEqual({ error: 'rate_limited' });
+	});
+
+	it('does NOT rate-limit GET requests (31 GETs still succeed)', async () => {
+		const ip = uniqueIp();
+		// Send well over the POST limit as GETs — none should be throttled.
+		for (let i = 0; i < 31; i++) {
+			const response = await SELF.fetch('https://example.com/', {
+				method: 'GET',
+				headers: { 'CF-Connecting-IP': ip },
+			});
+			expect(response.status).toBe(200);
+		}
+	});
+
+	it('falls back to the "unknown" bucket when CF-Connecting-IP is absent (no crash)', async () => {
+		// Requests without CF-Connecting-IP share the 'unknown' bucket. Keep
+		// the count low (2 POSTs) so we do not exhaust that shared bucket for
+		// any other test. Assert they succeed (non-429) and do not throw.
+		for (let i = 0; i < 2; i++) {
+			const response = await SELF.fetch('https://example.com/callback', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({}),
+			});
+			expect(response.status).not.toBe(429);
+		}
+	});
+});
+
+/**
+ * CORS / getAllowedOrigin tests.
+ *
+ * ALLOWED_ORIGINS is currently empty. In addSecurityHeaders the code sets
+ * `Access-Control-Allow-Origin` AND `Vary: Origin` together, only when
+ * `getAllowedOrigin(request)` returns a truthy value — so with an empty
+ * allowlist BOTH headers are absent for every response, regardless of
+ * whether the request carries an Origin header.
+ *
+ * (The preflight branch is the same: ACAO + Vary are set only when
+ * allowedOrigin is truthy; Methods/Headers/Max-Age are always set.)
+ */
+describe('Worker fetch handler — CORS / getAllowedOrigin', () => {
+	it('does NOT reflect an unallowed Origin (no ACAO, no Vary: Origin)', async () => {
+		const response = await SELF.fetch('https://example.com/', {
+			headers: { Origin: 'https://partner.example.com' },
+		});
+		// Allowlist empty → origin not reflected, and Vary: Origin is not set.
+		expect(response.headers.get('access-control-allow-origin')).toBeNull();
+		expect(response.headers.get('vary')).toBeNull();
+	});
+
+	it('sets neither Vary: Origin nor Access-Control-Allow-Origin when no Origin is present', async () => {
+		const response = await SELF.fetch('https://example.com/');
+		expect(response.headers.get('vary')).toBeNull();
+		expect(response.headers.get('access-control-allow-origin')).toBeNull();
+	});
+
+	it('responds to OPTIONS preflight with 204 and CORS preflight headers, no ACAO', async () => {
+		const response = await SELF.fetch('https://example.com/', {
+			method: 'OPTIONS',
+			headers: { Origin: 'https://partner.example.com' },
+		});
+		expect(response.status).toBe(204);
+		expect(response.headers.get('access-control-allow-methods')).toBe('GET, POST, OPTIONS');
+		expect(response.headers.get('access-control-allow-headers')).toBe('Content-Type');
+		expect(response.headers.get('access-control-max-age')).toBe('86400');
+		// Allowlist empty → no ACAO reflected.
+		expect(response.headers.get('access-control-allow-origin')).toBeNull();
+	});
+});
