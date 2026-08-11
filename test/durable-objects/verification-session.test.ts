@@ -10,6 +10,7 @@ import { hkdfDerive } from '../../src/lib/crypto-utils';
 import {
 	SESSION_STATE_IN_PROGRESS,
 	SESSION_STATE_SUCCESS,
+	SESSION_STATE_FAILED,
 	SESSION_STATE_LINK_EXPIRED,
 	SESSION_STATE_LINK_ALREADY_USED,
 } from '../../src/durable-objects/verification-session';
@@ -150,6 +151,75 @@ describe('VerificationSession Durable Object', () => {
 
 		expect(endResult).not.toBeNull();
 		expect(typeof (endResult as { payload: string }).payload).toBe('string');
+	});
+
+	it('4b. end response includes stateInt matching the terminal state written (SUCCESS)', async () => {
+		const stub = getStub(uniqueName('end-stateint-success'));
+		const payload = await encryptPayload(makePayload());
+
+		const start = await doPost<{ sessionId: string }>(stub, 'start', { payload });
+
+		const endResult = await doPost<{ payload: string; stateInt: number } | null>(stub, 'end', {
+			sessionId: start.sessionId,
+			sessionStateInt: SESSION_STATE_SUCCESS,
+			stepIp: 5,
+			errorCode: 0,
+			idCountry: 'US',
+			idState: 'CA',
+			idType: 'drivers-license',
+		});
+
+		expect(endResult).not.toBeNull();
+		// The end response must carry stateInt so the route layer can confirm
+		// the DO actually persisted the EXPECTED terminal state.
+		expect(typeof (endResult as { stateInt: number }).stateInt).toBe('number');
+		expect((endResult as { stateInt: number }).stateInt).toBe(SESSION_STATE_SUCCESS);
+	});
+
+	it('4c. end response includes stateInt matching the terminal state written (FAILED)', async () => {
+		const stub = getStub(uniqueName('end-stateint-fail'));
+		const payload = await encryptPayload(makePayload());
+
+		const start = await doPost<{ sessionId: string }>(stub, 'start', { payload });
+
+		const endResult = await doPost<{ payload: string; stateInt: number } | null>(stub, 'end', {
+			sessionId: start.sessionId,
+			sessionStateInt: SESSION_STATE_FAILED,
+			stepIp: 5,
+			errorCode: 0,
+			idCountry: 'US',
+			idState: 'CA',
+			idType: 'drivers-license',
+		});
+
+		expect(endResult).not.toBeNull();
+		expect((endResult as { stateInt: number }).stateInt).toBe(SESSION_STATE_FAILED);
+	});
+
+	it('4d. double-end (replay) returns the EXISTING stored stateInt', async () => {
+		const stub = getStub(uniqueName('end-stateint-replay'));
+		const payload = await encryptPayload(makePayload());
+
+		const start = await doPost<{ sessionId: string }>(stub, 'start', { payload });
+		const endBody = {
+			sessionId: start.sessionId,
+			sessionStateInt: SESSION_STATE_SUCCESS,
+			stepIp: 5,
+			errorCode: 0,
+			idCountry: 'US',
+			idState: 'CA',
+			idType: 'drivers-license',
+		};
+
+		const first = await doPost<{ payload: string; stateInt: number } | null>(stub, 'end', endBody);
+		expect(first).not.toBeNull();
+		expect((first as { stateInt: number }).stateInt).toBe(SESSION_STATE_SUCCESS);
+
+		// Replay: even though the second end body requests SUCCESS again, the
+		// stateInt returned must reflect the ALREADY-STORED state (SUCCESS=2).
+		const second = await doPost<{ payload: string; stateInt: number } | null>(stub, 'end', endBody);
+		expect(second).not.toBeNull();
+		expect((second as { stateInt: number }).stateInt).toBe(SESSION_STATE_SUCCESS);
 	});
 
 	it('5. double-end returns the existing payload instead of re-ending', async () => {

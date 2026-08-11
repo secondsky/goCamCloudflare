@@ -155,6 +155,15 @@ export async function handleResultRoutes(request: Request, env: Env, url: URL): 
 			return Response.json(AvsResponse.errorResponse(30010, 'Failed to save session data'));
 		}
 
+		// Defense-in-depth: confirm the DO actually persisted the SUCCESS state.
+		// If something went wrong inside the DO (a race, a partial write), the
+		// stored stateInt could be something other than SUCCESS — refuse to
+		// report success to the partner in that case.
+		if (endResult.stateInt !== SESSION_STATE_SUCCESS) {
+			sessionResult.errorCode = 30010;
+			return Response.json(AvsResponse.errorResponse(30010, 'Session is not in a success state'));
+		}
+
 		const successPayload = endResult.payload;
 
 		// Set the isAgeVerified cookie
@@ -264,6 +273,15 @@ export async function handleResultRoutes(request: Request, env: Env, url: URL): 
 		if (!endResult || typeof endResult.payload !== 'string') {
 			sessionResult.errorCode = 30014;
 			return Response.json(AvsResponse.errorResponse(30014, 'Failed to save session data'));
+		}
+
+		// Defense-in-depth: confirm the DO actually persisted the FAILED state.
+		// If something went wrong inside the DO (a race, a partial write), the
+		// stored stateInt could be something other than FAILED — refuse to
+		// report failure to the partner in that case.
+		if (endResult.stateInt !== SESSION_STATE_FAILED) {
+			sessionResult.errorCode = 30014;
+			return Response.json(AvsResponse.errorResponse(30014, 'Session is not in a fail state'));
 		}
 
 		return Response.json(AvsResponse.successResponse());

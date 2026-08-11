@@ -331,11 +331,27 @@ describe('handleResultRoutes — POST /result/success', () => {
 		expect(body).toEqual({ error: { code: 30010, msg: 'Failed to save session data' } });
 	});
 
+	it('DO end returns stateInt !== SUCCESS (FAILED) → 30010 Session is not in a success state', async () => {
+		// Defense-in-depth: even though the route asked the DO to end as SUCCESS,
+		// the DO reports the stored terminal state is FAILED (3). The route must
+		// refuse to report success to the partner.
+		const cookie = await makeSessionCookieHeader('hash1', 'req1');
+		const { env } = makeEnv({
+			getRequestSession: { sessionStartId: 'start1', accessTime: NOW, successKey: 'tok' },
+			end: { payload: 'some-payload', stateInt: 3 },
+		});
+		const handleResultRoutes = await importHandler();
+		const req = jsonRequest('/result/success', { stepId: VALID_STEP, token: 'tok' }, { Cookie: cookie });
+		const res = await handleResultRoutes(req as any, env, new URL('https://x/result/success'));
+		const body = await res!.json();
+		expect(body).toEqual({ error: { code: 30010, msg: 'Session is not in a success state' } });
+	});
+
 	it('happy path → {content:{successPayload, success:1}} + isAgeVerified Set-Cookie', async () => {
 		const cookie = await makeSessionCookieHeader('hash1', 'req1');
 		const { env } = makeEnv({
 			getRequestSession: { sessionStartId: 'start1', accessTime: NOW, successKey: 'tok' },
-			end: { payload: 'encrypted-success-payload' },
+			end: { payload: 'encrypted-success-payload', stateInt: 2 },
 		});
 		const handleResultRoutes = await importHandler();
 		const req = jsonRequest('/result/success', { stepId: VALID_STEP, token: 'tok' }, { Cookie: cookie });
@@ -358,7 +374,7 @@ describe('handleResultRoutes — POST /result/success', () => {
 		const cookie = await makeSessionCookieHeader('hash1', 'req1');
 		const { env } = makeEnv({
 			getRequestSession: { sessionStartId: 'start1', accessTime: NOW, successKey: 'tok' },
-			end: { payload: 'enc' },
+			end: { payload: 'enc', stateInt: 2 },
 		});
 		const handleResultRoutes = await importHandler();
 		const req = formRequest('/result/success', { stepId: String(VALID_STEP), token: 'tok' }, { Cookie: cookie });
@@ -460,11 +476,27 @@ describe('handleResultRoutes — POST /result/fail', () => {
 		expect(body).toEqual({ error: { code: 30014, msg: 'Failed to save session data' } });
 	});
 
+	it('DO end returns stateInt !== FAILED (SUCCESS) → 30014 Session is not in a fail state', async () => {
+		// Defense-in-depth: even though the route asked the DO to end as FAILED,
+		// the DO reports the stored terminal state is SUCCESS (2). The route must
+		// refuse to report failure to the partner.
+		const cookie = await makeSessionCookieHeader('hash1', 'req1');
+		const { env } = makeEnv({
+			getRequestSession: { sessionStartId: 'start1', accessTime: NOW, failKey: 'tok' },
+			end: { payload: 'some-payload', stateInt: 2 },
+		});
+		const handleResultRoutes = await importHandler();
+		const req = jsonRequest('/result/fail', { stepId: VALID_STEP, token: 'tok' }, { Cookie: cookie });
+		const res = await handleResultRoutes(req as any, env, new URL('https://x/result/fail'));
+		const body = await res!.json();
+		expect(body).toEqual({ error: { code: 30014, msg: 'Session is not in a fail state' } });
+	});
+
 	it('happy path → {content:{success:1}}, no Set-Cookie', async () => {
 		const cookie = await makeSessionCookieHeader('hash1', 'req1');
 		const { env } = makeEnv({
 			getRequestSession: { sessionStartId: 'start1', accessTime: NOW, failKey: 'tok' },
-			end: { payload: 'fail-payload-string' },
+			end: { payload: 'fail-payload-string', stateInt: 3 },
 		});
 		const handleResultRoutes = await importHandler();
 		const req = jsonRequest('/result/fail', { stepId: VALID_STEP, token: 'tok' }, { Cookie: cookie });

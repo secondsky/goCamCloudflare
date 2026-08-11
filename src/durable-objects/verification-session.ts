@@ -337,7 +337,7 @@ export class VerificationSession extends DurableObject<Env> {
 		idCountry: string,
 		idState: string,
 		idType: string
-	): Promise<{ payload: string } | null> {
+	): Promise<{ payload: string; stateInt: number } | null> {
 		this.ensureInitialized();
 
 		const aesKey = await this.getAesKey();
@@ -362,7 +362,7 @@ export class VerificationSession extends DurableObject<Env> {
 				sessionId,
 				errorCode: sessionData.errorCode || 0,
 			};
-			return { payload: await AvsEncryption.encryptObject(decryptedPayload, aesKey) };
+			return { payload: await AvsEncryption.encryptObject(decryptedPayload, aesKey), stateInt: sessionData.stateInt };
 		}
 
 		// Non-eligible state guard: a session in LINK_EXPIRED or
@@ -441,6 +441,7 @@ export class VerificationSession extends DurableObject<Env> {
 
 		return {
 			payload: await AvsEncryption.encryptObject(decryptedPayload, aesKey),
+			stateInt: sessionStateInt,
 		};
 	}
 
