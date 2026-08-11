@@ -35,7 +35,7 @@
  * action, so this is the only way to exercise it.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { env, runInDurableObject, runDurableObjectAlarm } from 'cloudflare:test';
+import { env, runInDurableObject, runDurableObjectAlarm, evictDurableObject } from 'cloudflare:test';
 import { AvsEncryption } from '../../src/lib/encryption';
 import { hkdfDerive } from '../../src/lib/crypto-utils';
 import {
@@ -638,21 +638,63 @@ describe('VerificationSession DO — callback-retry subsystem', () => {
 	});
 
 	it('15. getAesKey cache is reset when the DO is evicted (new instance re-derives)', async () => {
-		const stub = getStub(uniqueName('aes-evict'));
-		// First call populates the cache on the live instance.
+		const name = uniqueName('aes-evict');
+		const id = env.VERIFICATION_SESSION.idFromName(name);
+		const stub = env.VERIFICATION_SESSION.get(id);
+
+		// Prime the cache on the live instance.
 		const key1 = await runInDurableObject(stub, async (instance: VerificationSession) => {
 			return (instance as any).getAesKey();
 		});
 		expect(key1.byteLength).toBe(32);
-		// The cache is an in-memory field (`_aesKeyPromise`); after eviction
-		// a fresh instance re-derives. We can't directly assert eviction here
-		// without `evictDurableObject`, but we can at least confirm repeat
-		// calls on the SAME instance remain stable (covered by test 14). This
-		// test guards against the cache accidentally returning `undefined`.
-		const key2 = await runInDurableObject(stub, async (instance: VerificationSession) => {
+
+		// Evict the running instance. This tears down in-memory state
+		// (`_aesKeyPromise`, `initialized`) while preserving durable storage.
+		// The next get() for the SAME id mints a fresh instance whose
+		// `_aesKeyPromise` is null, so getAesKey re-derives from env.
+		await evictDurableObject(stub);
+
+		// New stub for the same id — runtime should construct a new instance.
+		const stub2 = env.VERIFICATION_SESSION.get(id);
+		const key2 = await runInDurableObject(stub2, async (instance: VerificationSession) => {
 			return (instance as any).getAesKey();
 		});
+
+		// The new instance must produce a valid 32-byte key without relying
+		// on the evicted instance's cache. Referential identity between
+		// key1/key2 is NOT required (different instances); what matters is
+		// that key2 is a correct HKDF output derived from the same
+		// ENCRYPTION_KEY.
 		expect(key2.byteLength).toBe(32);
+		const expected = await aesKeyPromise;
+		expect(Array.from(new Uint8Array(key2))).toEqual(Array.from(expected));
+	});
+
+	// ───────────────────────────────────────────────────────────────────
+	// DEFERRED: callback-hang → AbortController timeout (5000ms).
+	//
+	// The brief called for "callback hangs → AbortController timeout fires
+	// (5000ms)". This test is intentionally skipped: `vi.useFakeTimers` is
+	// NOT reliably supported in the @cloudflare/vitest-pool-workers runtime
+	// (workerd isolate), and a real 5000ms wait is far too slow for the
+	// suite. Documenting the deferral here per the brief's explicit
+	// allowance.
+	//
+	// Production behavior this would verify (see
+	// src/durable-objects/verification-session.ts:45 `CALLBACK_TIMEOUT_MS`
+	// = 5000 and the AbortController at :610-611): a hanging callback URL
+	// causes the AbortController to abort after 5000ms, dispatchCallback
+	// catches the abort (its `catch` block at :632-635 runs), and
+	// updateCallbackStatus records 'failed'.
+	// ───────────────────────────────────────────────────────────────────
+	it.skip('16. dispatchCallback: hanging callback URL → AbortController aborts after 5000ms → callbackStatus "failed"', async () => {
+		// SKIPPED: fake timers (`vi.useFakeTimers`) are not reliably supported
+		// in the Cloudflare workers pool (@cloudflare/vitest-pool-workers),
+		// and a real 5000ms wait (CALLBACK_TIMEOUT_MS at
+		// src/durable-objects/verification-session.ts:45) is too slow for
+		// the suite. Production behavior is covered by code review of the
+		// AbortController wiring at :610-611 and the catch block at :632-635.
+		expect(true).toBe(true);
 	});
 });
 
