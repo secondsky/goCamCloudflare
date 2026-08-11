@@ -93,6 +93,13 @@ export default {
 			const allowedOrigin = getAllowedOrigin(request);
 			if (allowedOrigin) {
 				newHeaders.set('Access-Control-Allow-Origin', allowedOrigin);
+			}
+			// Advertise Vary: Origin whenever the request carries an Origin
+			// header, even if this origin was not allowlisted. Otherwise a
+			// shared cache could serve a no-ACAO response to an allowed
+			// origin (or vice versa). When there is no Origin header at all,
+			// the response does not vary on Origin, so we omit Vary.
+			if (request.headers.get('Origin')) {
 				newHeaders.set('Vary', 'Origin');
 			}
 			return new Response(response.body, {
@@ -112,6 +119,10 @@ export default {
 			};
 			if (allowedOrigin) {
 				headers['Access-Control-Allow-Origin'] = allowedOrigin;
+			}
+			// See addSecurityHeaders: Vary: Origin must be advertised for any
+			// request carrying an Origin header, regardless of allowlist match.
+			if (request.headers.get('Origin')) {
 				headers['Vary'] = 'Origin';
 			}
 			return addSecurityHeaders(new Response(null, { status: 204, headers }));

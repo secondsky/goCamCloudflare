@@ -193,23 +193,29 @@ describe('Worker fetch handler — rate limiting', () => {
 /**
  * CORS / getAllowedOrigin tests.
  *
- * ALLOWED_ORIGINS is currently empty. In addSecurityHeaders the code sets
- * `Access-Control-Allow-Origin` AND `Vary: Origin` together, only when
- * `getAllowedOrigin(request)` returns a truthy value — so with an empty
- * allowlist BOTH headers are absent for every response, regardless of
- * whether the request carries an Origin header.
+ * ALLOWED_ORIGINS is currently empty, so `Access-Control-Allow-Origin` is
+ * never set (ACAO stays conditional on the allowlist). However, `Vary: Origin`
+ * is emitted whenever the request CARRIES an Origin header — even if that
+ * origin is not on the allowlist — so a shared cache cannot serve a
+ * no-ACAO response to an origin that would have been allowed (or vice versa).
+ * When the request has no Origin header at all, `Vary: Origin` is omitted
+ * (the response does not vary on Origin in that case).
  *
- * (The preflight branch is the same: ACAO + Vary are set only when
- * allowedOrigin is truthy; Methods/Headers/Max-Age are always set.)
+ * (The preflight branch follows the same rule: ACAO is set only when
+ * allowedOrigin is truthy; Vary: Origin is set whenever an Origin header is
+ * present; Methods/Headers/Max-Age are always set.)
  */
 describe('Worker fetch handler — CORS / getAllowedOrigin', () => {
-	it('does NOT reflect an unallowed Origin (no ACAO, no Vary: Origin)', async () => {
+	it('does NOT reflect an unallowed Origin (no ACAO) but still sets Vary: Origin', async () => {
 		const response = await SELF.fetch('https://example.com/', {
 			headers: { Origin: 'https://partner.example.com' },
 		});
-		// Allowlist empty → origin not reflected, and Vary: Origin is not set.
+		// Allowlist empty → origin not reflected (ACAO stays conditional on
+		// the allowlist). But the request CARRIES an Origin header, so the
+		// response varies on Origin from a cache's perspective and must
+		// advertise `Vary: Origin` regardless of the allowlist outcome.
 		expect(response.headers.get('access-control-allow-origin')).toBeNull();
-		expect(response.headers.get('vary')).toBeNull();
+		expect(response.headers.get('vary')).toBe('Origin');
 	});
 
 	it('sets neither Vary: Origin nor Access-Control-Allow-Origin when no Origin is present', async () => {
@@ -229,5 +235,8 @@ describe('Worker fetch handler — CORS / getAllowedOrigin', () => {
 		expect(response.headers.get('access-control-max-age')).toBe('86400');
 		// Allowlist empty → no ACAO reflected.
 		expect(response.headers.get('access-control-allow-origin')).toBeNull();
+		// Preflight carries an Origin header → Vary: Origin must be set so a
+		// shared cache does not cross-contaminate origins on the preflight.
+		expect(response.headers.get('vary')).toBe('Origin');
 	});
 });
