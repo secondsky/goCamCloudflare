@@ -104,7 +104,7 @@ describe('handleTokenRoutes', () => {
 });
 
 describe('handleTokenRoutes — DO start session states', () => {
-	it('start returns sessionState===4 (LINK_EXPIRED) → 30006 Invalid payload (no expired message in current code)', async () => {
+	it('start returns sessionState===4 (LINK_EXPIRED) → 30006 with specific expired message', async () => {
 		const { env } = makeEnv({ sessionId: 's1', sessionState: 4, linkBack: '/back' });
 		const handleTokenRoutes = await importHandler();
 		const req = new Request('https://x/token?d=abc', { method: 'GET' });
@@ -112,27 +112,25 @@ describe('handleTokenRoutes — DO start session states', () => {
 		expect(res).not.toBeNull();
 		expect(res!.status).toBe(200);
 		const body = await res!.text();
-		// NOTE: the brief describes an override to "This verification link has expired..."
-		// but the actual code (src/routes/token.ts lines 99-104) always renders
-		// 30006 'Invalid payload' for any non-IN_PROGRESS sessionState.
-		// See Concerns in task-1-report.md.
+		// State 4 (LINK_EXPIRED) must surface the actionable, user-facing message
+		// and NOT the generic 'Invalid payload' fallback.
 		expect(body).toContain('30006');
-		expect(body).toContain('Invalid payload');
-		expect(body).not.toContain('This verification link has expired');
+		expect(body).toContain('This verification link has expired. Please request a new link.');
+		expect(body).not.toContain('Invalid payload');
 	});
 
-	it('start returns sessionState===5 (LINK_ALREADY_USED) → 30006 Invalid payload (no used message in current code)', async () => {
+	it('start returns sessionState===5 (LINK_ALREADY_USED) → 30006 with specific used message', async () => {
 		const { env } = makeEnv({ sessionId: 's1', sessionState: 5, linkBack: '/back' });
 		const handleTokenRoutes = await importHandler();
 		const req = new Request('https://x/token?d=abc', { method: 'GET' });
 		const res = await handleTokenRoutes(req as any, env, new URL('https://x/token?d=abc'));
 		expect(res).not.toBeNull();
 		const body = await res!.text();
-		// NOTE: brief describes override to "This verification link has already been used..."
-		// but actual code renders generic 30006 'Invalid payload'.
+		// State 5 (LINK_ALREADY_USED) must surface the actionable message and
+		// NOT the generic 'Invalid payload' fallback.
 		expect(body).toContain('30006');
-		expect(body).toContain('Invalid payload');
-		expect(body).not.toContain('already been used');
+		expect(body).toContain('This verification link has already been used. Please request a new link.');
+		expect(body).not.toContain('Invalid payload');
 	});
 
 	it('start returns other non-IN_PROGRESS state (e.g. 2 SUCCESS) → 30006 Invalid payload', async () => {

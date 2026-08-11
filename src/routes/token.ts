@@ -12,7 +12,7 @@ import { getDoStub, createSessionCookie, withCookie, parseCookies } from '../mid
 import { renderTokenIndex } from '../templates/token-index';
 import { renderTokenEmbedCheck } from '../templates/token-embed-check';
 import { renderTokenError } from '../templates/token-error';
-import { VERIFICATION_STANDARD_V1, VERIFICATION_IFRAME_V1, SESSION_STATE_IN_PROGRESS } from '../durable-objects/verification-session';
+import { VERIFICATION_STANDARD_V1, VERIFICATION_IFRAME_V1, SESSION_STATE_IN_PROGRESS, SESSION_STATE_LINK_EXPIRED, SESSION_STATE_LINK_ALREADY_USED } from '../durable-objects/verification-session';
 import UAParser from 'ua-parser-js';
 
 interface DoStartResponse {
@@ -80,10 +80,15 @@ async function renderTokenPage(
 	const stub = getDoStub(env, payloadHash);
 
 	let avsSession: DoStartResponse | null = null;
+	let startSessionState: number | undefined;
 	try {
 		const startResult = await callDoJson<any>(stub, 'start', {
 				payload,
 		});
+		// Capture the DO-reported session state so the error path below can
+		// surface a specific message for expired/used links instead of the
+		// generic 'Invalid payload'.
+		startSessionState = startResult?.sessionState;
 		// Only render the verification page for sessions that are still
 		// IN_PROGRESS. Expired or already-used links (LINK_EXPIRED,
 		// LINK_ALREADY_USED) must not produce a verifiable session.
@@ -98,7 +103,13 @@ async function renderTokenPage(
 	}
 
 	if (!avsSession) {
-		const html = renderTokenError(30006, 'Invalid payload');
+		let errorMsg = 'Invalid payload';
+		if (startSessionState === SESSION_STATE_LINK_EXPIRED) {
+			errorMsg = 'This verification link has expired. Please request a new link.';
+		} else if (startSessionState === SESSION_STATE_LINK_ALREADY_USED) {
+			errorMsg = 'This verification link has already been used. Please request a new link.';
+		}
+		const html = renderTokenError(30006, errorMsg);
 		return new Response(html, {
 			headers: { 'Content-Type': 'text/html; charset=utf-8' },
 		});
