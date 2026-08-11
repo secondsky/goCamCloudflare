@@ -618,7 +618,19 @@ export class VerificationSession extends DurableObject<Env> {
 					},
 					body: callbackData.toString(),
 					signal: controller.signal,
+					// SSRF defense: never follow redirects. A partner callback URL
+					// that responds 3xx to an internal address (e.g. the cloud
+					// metadata endpoint http://169.254.169.254/...) would otherwise
+					// be silently followed by the Workers default (`redirect:
+					// 'follow'`), leaking session data to an internal target.
+					redirect: 'manual',
 				});
+
+				// With `redirect: 'manual'`, any 3xx is the raw redirect response.
+				// Reject it explicitly as a failure — do NOT follow the Location.
+				if (response.status >= 300 && response.status < 400) {
+					throw new Error(`Callback returned redirect ${response.status} — not following (SSRF defense)`);
+				}
 
 				if (!response.ok) {
 					throw new Error(`Callback returned HTTP ${response.status}`);

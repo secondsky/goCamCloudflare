@@ -238,9 +238,13 @@ interface FetchRecorder {
 	methods: string[];
 	bodies: string[];
 	contentTypes: string[];
+	// The `redirect` option passed to each fetch call (e.g. 'manual').
+	// Used by the SSRF tests to assert dispatchCallback sets
+	// `redirect: 'manual'` on the outbound POST.
+	redirects: string[];
 }
 function mockFetch(responder: (() => Response) | null = () => new Response('ok', { status: 200 }), throwError?: () => never): FetchRecorder {
-	const rec: FetchRecorder = { calls: 0, urls: [], methods: [], bodies: [], contentTypes: [] };
+	const rec: FetchRecorder = { calls: 0, urls: [], methods: [], bodies: [], contentTypes: [], redirects: [] };
 	originalFetch = globalThis.fetch;
 	globalThis.fetch = (async (input: any, init?: any) => {
 		rec.calls++;
@@ -248,6 +252,7 @@ function mockFetch(responder: (() => Response) | null = () => new Response('ok',
 		rec.methods.push(init?.method ?? 'GET');
 		rec.bodies.push(init?.body ?? '');
 		rec.contentTypes.push(init?.headers?.['Content-Type'] ?? init?.headers?.['content-type'] ?? '');
+		rec.redirects.push(init?.redirect ?? '');
 		if (throwError) throwError();
 		return responder ? responder() : new Response('ok', { status: 200 });
 	}) as typeof fetch;
@@ -389,7 +394,138 @@ describe('VerificationSession DO — callback-retry subsystem', () => {
 		expect(await readCallbackAttempts(stub, start.sessionId)).toBe(1);
 	});
 
-	it('4. endSession(SUCCESS) triggers a real dispatch in waitUntil (fast-fail URL → failed)', async () => {
+	// ───────────────────────────────────────────────────────────────────
+	// SSRF redirect defense — dispatchCallback must NOT follow redirects.
+	// A partner callback URL that responds 3xx to an internal address
+	// (e.g. the cloud metadata endpoint) would otherwise be silently
+	// followed by the Workers `fetch` default (`redirect: 'follow'`),
+	// leaking session data to an internal target. The fix sets
+	// `redirect: 'manual'` and treats any 3xx as a failure.
+	// ───────────────────────────────────────────────────────────────────
+
+	it('4. dispatchCallback: 302 redirect to internal address → callbackStatus "failed" (SSRF defense), redirect: "manual" passed', async () => {
+		const stub = getStub(uniqueName('cb-302-ssrf'));
+		const payload = await encryptPayload(makePayload({ callbackUrl: 'https://partner.example.com/hook' }));
+		const start = await doPost<{ sessionId: string }>(stub, 'start', { payload });
+		await runInDurableObject(stub, (instance: VerificationSession) => {
+			(instance as any).ensureInitialized();
+			(instance as any).ctx.storage.sql.exec(
+				`UPDATE sessions SET stateInt = ? WHERE sessionId = ?`,
+				SESSION_STATE_SUCCESS,
+				start.sessionId,
+			);
+		});
+
+		// Mock a redirect to the cloud metadata endpoint — the classic
+		// SSRF target. With `redirect: 'manual'` this is what the DO sees;
+		// without it, Workers would follow and POST to the internal URL.
+		const rec = mockFetch(() => new Response(null, {
+			status: 302,
+			headers: { Location: 'http://169.254.169.254/latest/meta-data/' },
+		}));
+		try {
+			await runInDurableObject(stub, async (instance: VerificationSession) => {
+				const session = (instance as any).getById(start.sessionId) as SessionData;
+				await (instance as any).dispatchCallback(
+					session, SESSION_STATE_SUCCESS, start.sessionId,
+					0, 5, 'US', 'CA', 'drivers-license',
+				);
+			});
+		} finally {
+			globalThis.fetch = originalFetch as typeof fetch;
+			originalFetch = null;
+		}
+
+		// Option A (spy): the fetch MUST be invoked with redirect: 'manual'.
+		// This is the direct security-control assertion — it fails against
+		// current code because no `redirect` option is set.
+		expect(rec.calls).toBe(1);
+		expect(rec.redirects[0]).toBe('manual');
+
+		// Behavioral: a redirect response is treated as a failure.
+		const session = await getSession(stub, start.sessionId);
+		expect(session?.callbackStatus).toBe('failed');
+		expect(session?.callbackStatus).not.toBe('sent');
+		expect(await readCallbackAttempts(stub, start.sessionId)).toBe(1);
+	});
+
+	it('5. dispatchCallback: 301 redirect → callbackStatus "failed" (SSRF defense)', async () => {
+		const stub = getStub(uniqueName('cb-301-ssrf'));
+		const payload = await encryptPayload(makePayload({ callbackUrl: 'https://partner.example.com/hook' }));
+		const start = await doPost<{ sessionId: string }>(stub, 'start', { payload });
+		await runInDurableObject(stub, (instance: VerificationSession) => {
+			(instance as any).ensureInitialized();
+			(instance as any).ctx.storage.sql.exec(
+				`UPDATE sessions SET stateInt = ? WHERE sessionId = ?`,
+				SESSION_STATE_SUCCESS,
+				start.sessionId,
+			);
+		});
+
+		const rec = mockFetch(() => new Response(null, {
+			status: 301,
+			headers: { Location: 'http://169.254.169.254/latest/meta-data/iam/security-credentials/' },
+		}));
+		try {
+			await runInDurableObject(stub, async (instance: VerificationSession) => {
+				const session = (instance as any).getById(start.sessionId) as SessionData;
+				await (instance as any).dispatchCallback(
+					session, SESSION_STATE_SUCCESS, start.sessionId,
+					0, 5, 'US', 'CA', 'drivers-license',
+				);
+			});
+		} finally {
+			globalThis.fetch = originalFetch as typeof fetch;
+			originalFetch = null;
+		}
+
+		expect(rec.calls).toBe(1);
+		expect(rec.redirects[0]).toBe('manual');
+		const session = await getSession(stub, start.sessionId);
+		expect(session?.callbackStatus).toBe('failed');
+		expect(session?.callbackStatus).not.toBe('sent');
+	});
+
+	it('6. dispatchCallback: 307 redirect → callbackStatus "failed" (SSRF defense)', async () => {
+		const stub = getStub(uniqueName('cb-307-ssrf'));
+		const payload = await encryptPayload(makePayload({ callbackUrl: 'https://partner.example.com/hook' }));
+		const start = await doPost<{ sessionId: string }>(stub, 'start', { payload });
+		await runInDurableObject(stub, (instance: VerificationSession) => {
+			(instance as any).ensureInitialized();
+			(instance as any).ctx.storage.sql.exec(
+				`UPDATE sessions SET stateInt = ? WHERE sessionId = ?`,
+				SESSION_STATE_SUCCESS,
+				start.sessionId,
+			);
+		});
+
+		// 307 preserves the POST method — particularly dangerous for SSRF
+		// because the session data body would be re-POSTed to the internal target.
+		const rec = mockFetch(() => new Response(null, {
+			status: 307,
+			headers: { Location: 'http://169.254.169.254/latest/meta-data/' },
+		}));
+		try {
+			await runInDurableObject(stub, async (instance: VerificationSession) => {
+				const session = (instance as any).getById(start.sessionId) as SessionData;
+				await (instance as any).dispatchCallback(
+					session, SESSION_STATE_SUCCESS, start.sessionId,
+					0, 5, 'US', 'CA', 'drivers-license',
+				);
+			});
+		} finally {
+			globalThis.fetch = originalFetch as typeof fetch;
+			originalFetch = null;
+		}
+
+		expect(rec.calls).toBe(1);
+		expect(rec.redirects[0]).toBe('manual');
+		const session = await getSession(stub, start.sessionId);
+		expect(session?.callbackStatus).toBe('failed');
+		expect(session?.callbackStatus).not.toBe('sent');
+	});
+
+	it('7. endSession(SUCCESS) triggers a real dispatch in waitUntil (fast-fail URL → failed)', async () => {
 		const stub = getStub(uniqueName('end-triggers-dispatch'));
 		// Port 1 on loopback refuses the connection immediately — no DNS, no
 		// real network egress. The DO's dispatch catch block fires within ms.
@@ -405,7 +541,7 @@ describe('VerificationSession DO — callback-retry subsystem', () => {
 		expect(await readCallbackAttempts(stub, start.sessionId)).toBe(1);
 	});
 
-	it('5. session without callbackUrl: end(SUCCESS) does NOT attempt a fetch', async () => {
+	it('8. session without callbackUrl: end(SUCCESS) does NOT attempt a fetch', async () => {
 		const stub = getStub(uniqueName('no-cb-url'));
 		let fetchCalls = 0;
 		originalFetch = globalThis.fetch;
@@ -425,7 +561,7 @@ describe('VerificationSession DO — callback-retry subsystem', () => {
 	// updateCallbackStatus — increments callbackAttempts on both outcomes.
 	// ───────────────────────────────────────────────────────────────────
 
-	it('6. updateCallbackStatus increments callbackAttempts on "sent" and on "failed"', async () => {
+	it('9. updateCallbackStatus increments callbackAttempts on "sent" and on "failed"', async () => {
 		const stub = getStub(uniqueName('ucs-increment'));
 		const payload = await encryptPayload(makePayload());
 		const start = await doPost<{ sessionId: string }>(stub, 'start', { payload });
@@ -454,7 +590,7 @@ describe('VerificationSession DO — callback-retry subsystem', () => {
 		expect(await readCallbackAttempts(stub, sid)).toBe(3);
 	});
 
-	it('7. updateCallbackStatus is a no-op when the session row is gone', async () => {
+	it('10. updateCallbackStatus is a no-op when the session row is gone', async () => {
 		const stub = getStub(uniqueName('ucs-missing'));
 		// No row was ever created for this id — the call must not throw and
 		// must not create a row.
@@ -469,7 +605,7 @@ describe('VerificationSession DO — callback-retry subsystem', () => {
 	// MAX_CALLBACK_ATTEMPTS (5) cap, then excludes the session.
 	// ───────────────────────────────────────────────────────────────────
 
-	it('8. alarm re-attempts a failed callback (attempts increments again)', async () => {
+	it('11. alarm re-attempts a failed callback (attempts increments again)', async () => {
 		const stub = getStub(uniqueName('alarm-retry'));
 		// Use the realistic flow: end(SUCCESS) with a fast-failing URL → 1
 		// failed attempt lands in waitUntil. endSession also arms the alarm.
@@ -488,7 +624,7 @@ describe('VerificationSession DO — callback-retry subsystem', () => {
 		expect((await getSession(stub, sid))?.callbackStatus).toBe('failed');
 	});
 
-	it('9. alarm excludes a session once callbackAttempts reaches MAX_CALLBACK_ATTEMPTS (5)', async () => {
+	it('12. alarm excludes a session once callbackAttempts reaches MAX_CALLBACK_ATTEMPTS (5)', async () => {
 		const stub = getStub(uniqueName('alarm-cap'));
 		const payload = await encryptPayload(makePayload({ callbackUrl: 'https://partner.example.com/hook' }));
 		const start = await doPost<{ sessionId: string }>(stub, 'start', { payload });
@@ -513,7 +649,7 @@ describe('VerificationSession DO — callback-retry subsystem', () => {
 		expect(await readCallbackAttempts(stub, sid)).toBe(5);
 	});
 
-	it('10. alarm skips sessions without a callbackUrl even if status is failed', async () => {
+	it('13. alarm skips sessions without a callbackUrl even if status is failed', async () => {
 		const stub = getStub(uniqueName('alarm-no-url'));
 		const payload = await encryptPayload(makePayload({ callbackUrl: '' }));
 		const start = await doPost<{ sessionId: string }>(stub, 'start', { payload });
@@ -535,7 +671,7 @@ describe('VerificationSession DO — callback-retry subsystem', () => {
 		expect(rec.calls).toBe(0);
 	});
 
-	it('11. alarm skips sessions still IN_PROGRESS (only SUCCESS/FAILED are retried)', async () => {
+	it('14. alarm skips sessions still IN_PROGRESS (only SUCCESS/FAILED are retried)', async () => {
 		const stub = getStub(uniqueName('alarm-inprogress'));
 		const payload = await encryptPayload(makePayload({ callbackUrl: 'https://partner.example.com/hook' }));
 		const start = await doPost<{ sessionId: string }>(stub, 'start', { payload });
@@ -559,7 +695,7 @@ describe('VerificationSession DO — callback-retry subsystem', () => {
 		expect((await getSession(stub, sid))?.stateInt).toBe(SESSION_STATE_IN_PROGRESS);
 	});
 
-	it('12. alarm succeeds a previously-failed callback when the endpoint recovers', async () => {
+	it('15. alarm succeeds a previously-failed callback when the endpoint recovers', async () => {
 		const stub = getStub(uniqueName('alarm-recover'));
 		const payload = await encryptPayload(makePayload({ callbackUrl: 'https://partner.example.com/hook' }));
 		const start = await doPost<{ sessionId: string }>(stub, 'start', { payload });
@@ -584,7 +720,7 @@ describe('VerificationSession DO — callback-retry subsystem', () => {
 		expect((await getSession(stub, sid))?.callbackStatus).toBe('sent');
 	});
 
-	it('13. alarm handles FAILED terminal state (not just SUCCESS)', async () => {
+	it('16. alarm handles FAILED terminal state (not just SUCCESS)', async () => {
 		const stub = getStub(uniqueName('alarm-failed-state'));
 		const payload = await encryptPayload(makePayload({ callbackUrl: 'https://partner.example.com/hook' }));
 		const start = await doPost<{ sessionId: string }>(stub, 'start', { payload });
@@ -613,7 +749,7 @@ describe('VerificationSession DO — callback-retry subsystem', () => {
 	// returns the cached promise (no re-derivation).
 	// ───────────────────────────────────────────────────────────────────
 
-	it('14. getAesKey: two calls on the same instance return identical derived bytes (cache hit)', async () => {
+	it('17. getAesKey: two calls on the same instance return identical derived bytes (cache hit)', async () => {
 		const stub = getStub(uniqueName('aes-cache'));
 		const key1 = await runInDurableObject(stub, async (instance: VerificationSession) => {
 			return (instance as any).getAesKey();
@@ -637,7 +773,7 @@ describe('VerificationSession DO — callback-retry subsystem', () => {
 		expect(Array.from(new Uint8Array(key1))).toEqual(Array.from(expected));
 	});
 
-	it('15. getAesKey cache is reset when the DO is evicted (new instance re-derives)', async () => {
+	it('18. getAesKey cache is reset when the DO is evicted (new instance re-derives)', async () => {
 		const name = uniqueName('aes-evict');
 		const id = env.VERIFICATION_SESSION.idFromName(name);
 		const stub = env.VERIFICATION_SESSION.get(id);
@@ -687,7 +823,7 @@ describe('VerificationSession DO — callback-retry subsystem', () => {
 	// catches the abort (its `catch` block at :632-635 runs), and
 	// updateCallbackStatus records 'failed'.
 	// ───────────────────────────────────────────────────────────────────
-	it.skip('16. dispatchCallback: hanging callback URL → AbortController aborts after 5000ms → callbackStatus "failed"', async () => {
+	it.skip('19. dispatchCallback: hanging callback URL → AbortController aborts after 5000ms → callbackStatus "failed"', async () => {
 		// SKIPPED: fake timers (`vi.useFakeTimers`) are not reliably supported
 		// in the Cloudflare workers pool (@cloudflare/vitest-pool-workers),
 		// and a real 5000ms wait (CALLBACK_TIMEOUT_MS at
